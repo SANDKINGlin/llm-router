@@ -14,8 +14,9 @@
 #   - 默认 dry-run;--exec 必须带 --yes(回滚是破坏性操作,防误触)。
 #   - 自动清理的副作用:data/*.db* (5 独立 SQLite WAL + 旁路 -wal/-shm 文件) +
 #     :8789 路由进程(用 fuser -k,非 pkill — 后者会自杀 exit 144)。
-#   - 代码还原:当前项目 git master 无 commit(git revert 用不了),按 manifest 手动还原;
-#     待项目纳入版本控制后,本脚本可增强为 `git revert/reset <ref>`(留 TODO 标记)。
+#   - 代码还原:项目已纳入 git(baseline commit 起),本脚本打印该切片的 git 改动,
+#     指引用户 `git revert/reset`(本脚本不自动 git reset —— 那会丢未提交工作,
+#     由人工确认更安全)。无 commit 时回退到 manifest 手动还原。
 #   - 与 design.md D9 一致:回滚挂 routing-change-safety + service-startup-checklist。
 set -euo pipefail
 
@@ -78,7 +79,18 @@ cmd_dry_run() {
     echo "=== 脚本将自动清理的副作用(dry-run,未执行)==="
     echo "  DB 文件: $DATA_DIR/*.db{,-wal,-shm}"
     echo "  进程   : :$PORT (fuser -k)"
-    echo "  代码   : 按 manifest 手动/git(项目暂无 commit,git revert 不可用)"
+    echo
+    # 代码还原:优先 git(有 baseline commit 后可用)
+    if git -C "$PROJ_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
+       && [[ -n "$(git -C "$PROJ_ROOT" log --oneline -1 2>/dev/null)" ]]; then
+        local head_ref
+        head_ref="$(git -C "$PROJ_ROOT" rev-parse --short HEAD)"
+        echo "  代码(git): HEAD=$head_ref"
+        echo "    还原该切片的 commit:git -C $PROJ_ROOT revert <slice-commit-sha>"
+        echo "    或回到 baseline:   git -C $PROJ_ROOT reset --hard $head_ref(谨慎,丢未提交)"
+    else
+        echo "  代码   : 按 manifest 手动(项目无 git commit)"
+    fi
     echo
     echo "确认无误后:scripts/revert.sh --exec $slice --yes"
 }
@@ -100,9 +112,15 @@ cmd_exec() {
     # 2) 杀路由进程
     kill_port
     echo "    杀进程: :$PORT"
-    # 3) 代码还原:提示按 manifest 手动(无 git commit)
-    echo ">>> 代码还原:请按 manifest 中的『还原步骤』手动操作"
-    echo "    (项目 git master 暂无 commit;纳入版本控制后可改 git revert/reset)"
+    # 3) 代码还原:git 有 commit 时指引用户 git revert/reset(不自动 reset,防丢未提交工作)
+    if git -C "$PROJ_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
+       && [[ -n "$(git -C "$PROJ_ROOT" log --oneline -1 2>/dev/null)" ]]; then
+        echo ">>> 代码还原:git revert/reset(人工确认更安全,脚本不自动执行)"
+        echo "    git -C $PROJ_ROOT revert <该切片的 commit-sha>"
+        echo "    或回到当前 HEAD $(git -C "$PROJ_ROOT" rev-parse --short HEAD):见 manifest"
+    else
+        echo ">>> 代码还原:请按 manifest 中的『还原步骤』手动操作"
+    fi
     echo ">>> 回滚完成。验证:pytest 全绿 + curl :$PORT/healthz"
 }
 
