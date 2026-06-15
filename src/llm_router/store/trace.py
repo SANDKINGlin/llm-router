@@ -246,16 +246,27 @@ class TraceStore:
         result: str,
         latency: Optional[float] = None,
         cost: Optional[float] = None,
+        hop_attribution: Optional[str] = None,
     ) -> None:
         """OWNER 调完 provider 后回填 result/latency/cost(CAS 的后半段)。
 
-        reward/reward_committed_at/hop_attribution 不在此填(Phase1 预留)。
+        reward/reward_committed_at 仍 Phase1 预留(不填)。
+        hop_attribution:S1.5a 起可传(由 routing.hop 的 HopAttribution.to_json() 产出
+        的 JSON 串);None(默认)= 不动该列,守现有调用点零回归。
         """
-        await self._db.execute(
-            "UPDATE trace SET result = ?, latency = ?, cost = ? "
-            "WHERE trace_id = ?",
-            (result, latency, cost, trace_id),
-        )
+        if hop_attribution is None:
+            # 默认路径:保留原样 SQL 文本(守 4 个现有调用点零行为变化)。
+            await self._db.execute(
+                "UPDATE trace SET result = ?, latency = ?, cost = ? "
+                "WHERE trace_id = ?",
+                (result, latency, cost, trace_id),
+            )
+        else:
+            await self._db.execute(
+                "UPDATE trace SET result = ?, latency = ?, cost = ?, "
+                "hop_attribution = ? WHERE trace_id = ?",
+                (result, latency, cost, hop_attribution, trace_id),
+            )
 
     async def execute_idempotent(
         self,
