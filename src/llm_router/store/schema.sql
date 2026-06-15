@@ -1,0 +1,7 @@
+-- schema.sql — S0.0 空。各切片填:
+-- S1.1 trace.db: trace_id/correlation_id/parent_correlation_id/idempotency_key(NOT NULL)/provider/result/latency/cost/reward/reward_committed_at/hop_attribution/created_at
+-- S1.2 token_ledger.db: provider/model/prompt_tokens/completion_tokens/cost/timestamp
+-- S2.5 task_state.db: state(pending/running/failed/completed)/retry_count/last_error/heartbeat_at/attempts
+-- S1.6 circuit_state.db: tier(key/provider/global)/entity_id/count/state/open_until
+-- S2.8 health.db: provider/last_probe_at/latency_ms/alive
+-- 全部用 SQLite WAL(Python sqlite3/aiosqlite)。

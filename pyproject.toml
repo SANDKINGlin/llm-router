@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-router"
+version = "0.0.1"
+description = "智能路由层(API池):聚合 LLM,按需调用,细粒度能力匹配。Phase1 能跑最小版。"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+# Phase2+ 追加: aiosqlite(持久化) / litellm(provider适配) / sentence-transformers(bge)
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_router"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

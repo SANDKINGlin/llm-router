@@ -1,0 +1,16 @@
+# router-policy.yaml — S1.3 真实 schema(provider 列表 + tier + 额度 + cooldown)。
+# Phase1 用 mock provider 占位验证 schema(无真 provider,S2.3 Scanner 才填);
+# S2.x 接真 provider 时填 base_url + api_key_env(环境变量名,非 key 本身,守 security.md)。
+version: 1
+policy_version: "0.1.0"
+gray_percent: 100          # S4.1 灰度:Phase1 全量试点
+providers:
+  - name: mock
+    tier: fast             # strong / medium / fast(pydantic Literal 校验)
+    quota: 1000000         # 额度(token,S2.4 Cost Budget Gate 消费)
+    cooldown_s: 30         # 单 key cooldown 上限(秒,S1.6 熔断用)
+    # base_url / api_key_env:Phase1 mock 留空;S2.x 接真 provider 时填
+tiers:
+  strong: []
+  medium: []
+  fast: [mock]
