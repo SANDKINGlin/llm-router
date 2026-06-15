@@ -16,12 +16,19 @@ class ProviderEntry(BaseModel):
     tier 由 pydantic Literal 校验(strong/medium/fast)——畸形值触发 ValidationError(CI 门禁)。
     base_url / api_key_env 留空:Phase1 mock 无 key,S2.x 接真 provider 时填;
     api_key_env 存的是**环境变量名**,非 key 本身(守 security.md,不硬编码 secret)。
+
+    is_free / cost_multiplier(S2.1a 新增,**REQUIRED**):路由选择排序键的数据源
+    (design.md 约束#3 字典序 `(capability_match DESC, is_free DESC, 倍率 ASC)`)。
+    REQUIRED 而非 Optional——fail-fast:provider 不声明 cost 状态 → 配置加载 ValidationError,
+    防真 provider 被静默当 free(破坏"免费对口严格优先")。
     """
 
     name: str
     tier: Literal["strong", "medium", "fast"]
     quota: int
     cooldown_s: int
+    is_free: bool
+    cost_multiplier: float
     base_url: str | None = None
     api_key_env: str | None = None
 

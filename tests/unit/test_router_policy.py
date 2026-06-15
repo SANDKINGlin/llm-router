@@ -25,6 +25,8 @@ providers:
     tier: fast
     quota: 1000000
     cooldown_s: 30
+    is_free: true
+    cost_multiplier: 0.0
 tiers:
   strong: []
   medium: []
@@ -50,11 +52,27 @@ def test_valid_policy_loads_and_validates(tmp_path):
     assert entry.tier == "fast"
     assert entry.quota == 1_000_000
     assert entry.cooldown_s == 30
+    # S2.1a:is_free / cost_multiplier 解析正确(排序键数据源)
+    assert entry.is_free is True
+    assert entry.cost_multiplier == 0.0
     # base_url / api_key_env 留空(Phase1 mock):Optional 默认 None
     assert entry.base_url is None
     assert entry.api_key_env is None
 
     assert policy.tiers["fast"] == ["mock"]
+
+
+def test_malformed_policy_missing_cost_fields_rejected(tmp_path):
+    """验收②(CI 门禁,S2.1a 扩展):provider 缺 is_free / cost_multiplier → ValidationError。
+
+    fail-fast 防真 provider 被静默当 free(破坏"免费对口严格优先")。
+    """
+    bad = _VALID_YAML.replace("    is_free: true\n    cost_multiplier: 0.0\n", "")
+    p = tmp_path / "router-policy.yaml"
+    p.write_text(bad)
+
+    with pytest.raises(ValidationError):
+        load_policy(p)
 
 
 def test_malformed_policy_bad_tier_rejected(tmp_path):

@@ -57,9 +57,12 @@ def healthz() -> JSONResponse:
 
 
 @app.post("/v1/chat/completions")
-def openai_chat(req: _OpenAIRequest) -> dict:
-    """OpenAI 协议入口(S0.0 → MockProvider)。Roo/Codex 走这个。"""
-    text, model = _provider.complete(_extract_prompt(req.messages))
+async def openai_chat(req: _OpenAIRequest) -> dict:
+    """OpenAI 协议入口(S0.0 → MockProvider)。Roo/Codex 走这个。
+
+    S2.1a:async def + await(Provider.complete 翻 async,为 S2.1b 真 adapter 铺路)。
+    """
+    text, model = await _provider.complete(_extract_prompt(req.messages))
     return {
         "id": "chatcmpl-mock",
         "object": "chat.completion",
@@ -73,9 +76,12 @@ def openai_chat(req: _OpenAIRequest) -> dict:
 
 
 @app.post("/v1/messages")
-def anthropic_messages(req: _AnthropicRequest) -> dict:
-    """Anthropic 协议入口(S0.0 → MockProvider)。CC 走这个。"""
-    text, model = _provider.complete(_extract_prompt(req.messages))
+async def anthropic_messages(req: _AnthropicRequest) -> dict:
+    """Anthropic 协议入口(S0.0 → MockProvider)。CC 走这个。
+
+    S2.1a:async def + await(Provider.complete 翻 async)。
+    """
+    text, model = await _provider.complete(_extract_prompt(req.messages))
     return {
         "id": "msg_mock",
         "type": "message",

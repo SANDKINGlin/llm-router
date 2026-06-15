@@ -13,5 +13,5 @@ _CANNED = "[mock] llm-router skeleton OK — canned response, not a real model."
 class MockProvider(Provider):
     name = "mock"
 
-    def complete(self, prompt: str) -> tuple[str, str]:
+    async def complete(self, prompt: str) -> tuple[str, str]:
         return _CANNED, "mock-skeleton"
