@@ -25,3 +25,14 @@ providers:
     model: nvidia/llama-3.1-nemotron-70b-instruct
     base_url: https://integrate.api.nvidia.com/v1
     api_key_env: NVIDIA_API_KEY
+
+  # ── OpenRouter(聚合,免费档模型)── 设 OPENROUTER_API_KEY 后启用 ──
+  - name: openrouter
+    tier: strong
+    quota: 500000
+    cooldown_s: 30
+    is_free: true
+    cost_multiplier: 0.0
+    model: openai/gpt-oss-120b:free
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
