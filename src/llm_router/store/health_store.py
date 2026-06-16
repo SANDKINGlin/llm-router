@@ -120,22 +120,34 @@ class HealthStore:
             r = await cur.fetchone()
         return self._row(r) if r is not None else None
 
-    async def latest_alive(self, providers: Optional[list[str]] = None) -> list[HealthRow]:
+    async def latest_probe(
+        self,
+        providers: Optional[list[str]] = None,
+        *,
+        alive_only: bool = False,
+    ) -> list[HealthRow]:
         """返回各 provider 的最新探活行(供熔断/路由切换前 fast 查询)。
 
         providers=None → 全部;否则只含指定 provider(不存在的跳过)。
+        alive_only=True → 只返 alive=True 的行(供「哪些 provider 还能用」查询)。
+            闭合名实 bug(CODEX 实证):旧名 latest_alive 暗示过滤 alive 但实际不过滤——
+            改名 latest_probe(诚实:返最新探活行,死活都含),要过滤显式传 alive_only=True,
+            让熔断/路由切换前的 caller 不会因名字误导而漏过滤死 provider。
         """
         if providers is None:
-            async with self._db.execute(
+            sql = (
                 "SELECT provider, last_probe_at, latency_ms, alive, created_at, updated_at "
-                "FROM health ORDER BY provider ASC"
-            ) as cur:
+                "FROM health"
+                + (" WHERE alive = 1" if alive_only else "")
+                + " ORDER BY provider ASC"
+            )
+            async with self._db.execute(sql) as cur:
                 rows = await cur.fetchall()
             return [self._row(r) for r in rows]
         out: list[HealthRow] = []
         for p in providers:
             row = await self.get(p)
-            if row is not None:
+            if row is not None and (not alive_only or row.alive):
                 out.append(row)
         return out
 
@@ -147,13 +159,23 @@ class HealthStore:
         *,
         latency_ms: Optional[float],
         alive: bool,
+        at: Optional[str] = None,
     ) -> HealthRow:
-        """记一次探活结果(UPSERT:同 provider 覆盖为最新)。
+        """记一次探活结果(UPSERT:同 provider 覆盖为最新,但**旧戳不盖新戳**)。
 
         latency_ms 可 None(探活超时/连接失败,无延迟测量);alive 必填。
-        返回更新后的行。created_at 仅首次插入写,后续 UPSERT 保留(守「首次入池时刻」)。
+        at:可选,显式探活时刻(测试注入 / 排队探活回填;生产默认 now)。须可与 last_probe_at
+            同序比较(标准 ISO 格式,_now_iso 满足)。
+        返回该 provider 当前行——若新戳更老被单调守卫拒绝,返回的是现有(更新)行,不变更。
+        created_at 仅首次插入写,后续 UPSERT 保留(守「首次入池时刻」)。
+
+        单调性守卫(闭合 CODEX 实证 bug):UPSERT 仅当新戳 >= 现有戳才更新——多副本 / 启动期
+        时钟漂移下旧探活后到不会倒退熔断恢复判断。
+        # ponytail: SQL `<=` 文本比较依赖 last_probe_at 同格式(均来自 _now_iso / 一致 ISO)。
+        #   若未来允许异构格式戳,改 Python 端 datetime 解析比较(同 task_state HIGH #1 范式)。
         """
-        now = _now_iso()
+        ts = at if at is not None else _now_iso()
+        now = _now_iso()  # updated_at 始终真实写入时刻,与探活时刻 ts 解耦
         await self._db.execute(
             "INSERT INTO health "
             "(provider, last_probe_at, latency_ms, alive, created_at, updated_at) "
@@ -162,8 +184,9 @@ class HealthStore:
             "  last_probe_at = excluded.last_probe_at, "
             "  latency_ms = excluded.latency_ms, "
             "  alive = excluded.alive, "
-            "  updated_at = excluded.updated_at",
-            (provider, now, latency_ms, 1 if alive else 0, now, now),
+            "  updated_at = excluded.updated_at "
+            "WHERE health.last_probe_at <= excluded.last_probe_at",
+            (provider, ts, latency_ms, 1 if alive else 0, now, now),
         )
         row = await self.get(provider)
         assert row is not None

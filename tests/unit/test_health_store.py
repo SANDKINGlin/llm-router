@@ -86,7 +86,7 @@ def test_record_probe_upsert_keeps_created_updates_rest(tmp_path):
             assert second.last_probe_at != first.last_probe_at
             assert second.created_at == first.created_at, "created_at 须保留(首次入池时刻)"
             # 仍只有一行(provider PK)
-            all_rows = await store.latest_alive()
+            all_rows = await store.latest_probe()
             assert len(all_rows) == 1
         finally:
             await store.close()
@@ -110,8 +110,12 @@ def test_record_probe_dead_with_null_latency(tmp_path):
     _run(body())
 
 
-def test_latest_alive_filter_and_missing(tmp_path):
-    """latest_alive(providers) 只返指定 + 跳过不存在;None 返全部(按 provider 升序)。"""
+def test_latest_probe_filter_and_missing(tmp_path):
+    """latest_probe(providers) 只返指定 + 跳过不存在;None 返全部(按 provider 升序)。
+
+    名为 latest_probe(非 latest_alive):返回的是各 provider 最新探活行,
+    死的(alive=False)也包含——避免旧名 latest_alive 暗示"过滤 alive"的名实 bug。
+    """
 
     async def body():
         store = HealthStore(tmp_path / "health.db")
@@ -121,13 +125,72 @@ def test_latest_alive_filter_and_missing(tmp_path):
             await store.record_probe("beta", latency_ms=20.0, alive=False)
             await store.record_probe("gamma", latency_ms=30.0, alive=True)
 
-            all_rows = await store.latest_alive()
+            all_rows = await store.latest_probe()
             assert [r.provider for r in all_rows] == ["alpha", "beta", "gamma"]
 
-            subset = await store.latest_alive(["gamma", "beta", "ghost"])
+            subset = await store.latest_probe(["gamma", "beta", "ghost"])
             assert {r.provider for r in subset} == {"beta", "gamma"}  # ghost 跳过
             assert all(r.alive for r in subset if r.provider == "gamma")
             assert next(r for r in subset if r.provider == "beta").alive is False
+        finally:
+            await store.close()
+
+    _run(body())
+
+
+def test_latest_probe_alive_only_filters_dead(tmp_path):
+    """alive_only=True 只返活 provider——闭合 CODEX 实证盲区:
+    旧 latest_alive 名字带"alive"却不过滤 alive,死的也返;新 API 让"哪些 provider 还能用"
+    查询显式且不会被 caller 遗漏过滤(熔断/路由切换前必用)。
+    """
+
+    async def body():
+        store = HealthStore(tmp_path / "health.db")
+        await store.init()
+        try:
+            await store.record_probe("alpha", latency_ms=10.0, alive=True)
+            await store.record_probe("beta", latency_ms=20.0, alive=False)
+            await store.record_probe("gamma", latency_ms=30.0, alive=True)
+
+            alive_all = await store.latest_probe(alive_only=True)
+            assert [r.provider for r in alive_all] == ["alpha", "gamma"], "死 provider 必须被滤掉"
+            assert all(r.alive for r in alive_all)
+
+            alive_subset = await store.latest_probe(["beta", "gamma"], alive_only=True)
+            assert [r.provider for r in alive_subset] == ["gamma"], "指定集内也只留活的"
+
+            # alive_only=False(默认)保留旧行为:死的也返
+            default_all = await store.latest_probe()
+            assert {r.provider for r in default_all} == {"alpha", "beta", "gamma"}
+        finally:
+            await store.close()
+
+    _run(body())
+
+
+def test_record_probe_monotonic_old_does_not_overwrite_new(tmp_path):
+    """乱序时间戳:更老的探活戳不得覆盖更新的戳(闭合 CODEX 实证 bug)。
+
+    触发场景:多副本/启动期时钟漂移/异步回填——旧探活后到会让熔断恢复判断读到倒退状态。
+    守卫:UPSERT 仅当新戳 >= 现有戳才更新(单调推进)。
+    """
+
+    async def body():
+        store = HealthStore(tmp_path / "health.db")
+        await store.init()
+        try:
+            # 先写一条"新"探活(alive=True,延迟低)
+            await store.record_probe(
+                "p", latency_ms=10.0, alive=True, at="2026-06-16T12:00:00+00:00"
+            )
+            # 再写一条"更老"的戳(模拟时钟倒退/旧 probe 回填,alive 翻死)
+            await store.record_probe(
+                "p", latency_ms=99.0, alive=False, at="2020-01-01T00:00:00+00:00"
+            )
+            row = await store.get("p")
+            assert row.last_probe_at == "2026-06-16T12:00:00+00:00", "旧戳不得覆盖新戳"
+            assert row.alive is True, "旧状态不得覆盖新状态"
+            assert row.latency_ms == 10.0, "旧延迟不得覆盖新延迟"
         finally:
             await store.close()
 
