@@ -21,6 +21,7 @@ import random
 from typing import Callable
 
 from ..config import ProviderEntry
+from .matcher import TierMatcher
 from .strategy import RoutingStrategy
 
 # core spec 默认值。
@@ -50,6 +51,7 @@ class EpsilonGreedy(RoutingStrategy):
         epsilon_min: float = _EPSILON_MIN,
         chooser: Callable[[], float] | None = None,
         explorer: Callable[[int], int] | None = None,
+        matcher: "TierMatcher | None" = None,
     ) -> None:
         self._entries = entries
         self._eps_start = epsilon_start
@@ -58,6 +60,8 @@ class EpsilonGreedy(RoutingStrategy):
         self._eps_min = epsilon_min
         self._chooser: Callable[[], float] = chooser or random.random
         self._explorer: Callable[[int], int] = explorer or (lambda k: random.randrange(k))
+        # ② 匹配层注入(测试确定性;Phase2 换 BgeMatcher 同接口,排序键逻辑不动)。
+        self._matcher: TierMatcher = matcher or TierMatcher()
         self._requests = 0  # 内存计数器(重启 reset)
 
     def _epsilon(self) -> float:
@@ -65,22 +69,34 @@ class EpsilonGreedy(RoutingStrategy):
         eps = self._eps_start * (self._decay_factor ** (self._requests // self._decay_every))
         return max(self._eps_min, eps)
 
-    def _sort_key(self, name: str) -> tuple[bool, float]:
-        """字典序排序键(约束#3 的 S2.1a 部分)。
+    def _rank(self, name: str, task_type: str | None) -> tuple[bool, bool, float]:
+        """字典序排序键(约束#3 routing-priority-principle,**非加权和**):
+        (capability_match DESC, is_free DESC, 倍率 ASC)。
 
-        返回 (not is_free, cost_multiplier):free 排前(not is_free=False),
-        同 free 组内 cost 升序。capability_match 槽位 defer S2.2(此处等能力)。
+        - capability_match:② 匹配层 TierMatcher 判 provider tier 是否对口 task_type。
+          对口排前(not matched=False);非对口落尾作 fallback(S2.2 软尾,不硬滤)。
+        - task_type=None/未知 → 全对口(向后兼容 S2.1a,S2.1a 时 capability 槽置常量 True)。
         """
         entry = self._entries[name]
-        return (not entry.is_free, entry.cost_multiplier)
+        matched = self._matcher.matches(entry.tier, task_type)
+        return (not matched, not entry.is_free, entry.cost_multiplier)
+
+    def _sort_key(self, name: str) -> tuple[bool, bool, float]:
+        """S2.1a 单测用的 unary 入口(task_type=None → 全对口,顺序零变化)。
+
+        返回 (False, not is_free, cost_multiplier):首槽全 False 不扰序,
+        退化为 S2.1a 的 (is_free DESC, cost ASC)——test_epsilon_greedy 8 单测契约不变。
+        """
+        return self._rank(name, None)
 
     def plan(  # type: ignore[override]
         self, candidates: list[str], context: dict
     ) -> list[str]:
         """返回完整尝试链:ε 探索选 primary(每请求计 1 次,非每跳),其余按优先级序。
 
-        单一排序源(_sort_key)+ 单一计数点(_requests)+ 零漂移(HERMES [CONSENSUS] 2026-06-15,
-        优于初版 select_provider+fallback_order 双方法)。select_provider 继承 ABC 包装 = plan(...)[0]。
+        单一排序源(_rank,含 S2.2 capability 首槽)+ 单一计数点(_requests)+ 零漂移
+        (HERMES [CONSENSUS] 2026-06-15,优于初版 select_provider+fallback_order 双方法)。
+        select_provider 继承 ABC 包装 = plan(...)[0]。task_type 从 context 取(无则全对口,向后兼容)。
         """
         if not candidates:
             raise NoCandidateError("候选 provider 列表为空,无法选择")
@@ -90,7 +106,8 @@ class EpsilonGreedy(RoutingStrategy):
 
         self._requests += 1  # 计入本次选择,驱动 ε 衰减(每请求一次,非每跳)
 
-        ordered = sorted(candidates, key=self._sort_key)
+        task_type = context.get("task_type")  # ② 匹配层信号;无 → 全对口(S2.1a 顺序)
+        ordered = sorted(candidates, key=lambda n: self._rank(n, task_type))
 
         # ε 概率探索:从有序候选随机挑 primary;否则利用最优 ordered[0]。
         if self._chooser() < self._epsilon():
