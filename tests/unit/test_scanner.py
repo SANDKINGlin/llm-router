@@ -13,6 +13,7 @@ import respx
 from llm_router.api.cascade import Cascade
 from llm_router.api.epsilon_greedy import EpsilonGreedy
 from llm_router.config import ProviderEntry
+from llm_router.providers.mock import MockProvider
 from llm_router.providers.openai import OpenAIProvider
 from llm_router.resilience.circuit_breaker import CircuitBreaker
 from llm_router.scanner.mnfst import build_adapters, load_manifest
@@ -147,3 +148,66 @@ def test_cascade_routes_to_real_adapter(tmp_path):
 def await_sync(coro):
     import asyncio
     return asyncio.run(coro)
+
+
+@respx.mock
+def test_real_provider_preferred_over_mock_when_key_set(tmp_path):
+    """B1 回归守卫:配了 key 的真 provider 必须排在 mock 前,被优先调用(修 mock 支配 bug)。
+
+    模拟 app.py _build_cascade 产物:候选 = [真 adapter 在前, mock 最后兜底]。
+    真 provider 返 "real-ok";mock 返 "[mock] canned"。纯利用模式链首必须是真 provider。
+    若哪天候选顺序退化成 mock 在前,此测试会红(mock 答了 → final_text 含 [mock])。
+    """
+    base = "https://test.pref.invalid/v1"
+    entries = [
+        ProviderEntry(name="mock", tier="fast", quota=1, cooldown_s=1, is_free=True, cost_multiplier=0.0),
+        ProviderEntry(name="realprov", tier="fast", quota=1, cooldown_s=1, is_free=True, cost_multiplier=0.0,
+                      model="rm", base_url=base, api_key_env="REALPROV_KEY"),
+    ]
+    real = build_adapters(entries, env={"REALPROV_KEY": "sk-real"})
+    assert len(real) == 1
+    # 同 app.py(修 B1 后):真 provider 在前,mock 最后兜底。
+    candidates = [*real, ("mock", MockProvider(), "mock")]
+
+    respx.post(f"{base}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "id": "x", "object": "chat.completion", "created": 1, "model": "realprov-m",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "real-ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }))
+
+    store = TraceStore(tmp_path / "trace.db")
+    breaker = CircuitBreaker(tmp_path / "circuit.db")
+    entries_map = {e.name: e for e in entries}
+    strategy = EpsilonGreedy(entries_map, chooser=lambda: 1.0)  # 纯利用 → 必取链首
+    cascade = Cascade(store, breaker, strategy, candidates, budget=6)
+    result = await_sync(cascade.run("hi", correlation_id="c1"))
+    assert result.success is True
+    assert result.final_text == "real-ok", "真 provider 必须优先被调(非 mock)"
+    assert "[mock]" not in (result.final_text or ""), "mock 不该在真 provider 可用时应答(B1)"
+
+
+def test_app_build_cascade_orders_real_before_mock(monkeypatch, tmp_path):
+    """B1 结构守卫:app._build_cascade 产的候选序必须是 [真..., mock](真在前)。
+
+    不发 HTTP,只验候选顺序。注入临时 manifest + 临时 key,确认真 adapter 在 mock 前。
+    """
+    import llm_router.app as app_mod
+
+    # 临时 manifest 指向 tmp_path,临时设 key。
+    manifest = tmp_path / "providers.yaml"
+    manifest.write_text(
+        "providers:\n"
+        "  - name: realprov\n"
+        "    tier: fast\n    quota: 1\n    cooldown_s: 1\n    is_free: true\n    cost_multiplier: 0.0\n"
+        "    model: rm\n    base_url: https://test.order.invalid/v1\n    api_key_env: REALPROV_KEY\n"
+    )
+    monkeypatch.setattr("llm_router.scanner.mnfst._DEFAULT_MANIFEST", manifest)
+    monkeypatch.setenv("REALPROV_KEY", "sk-real")
+    # policy 的 mock 仍来自 router-policy.yaml(无 key,MockProvider)。
+
+    cascade = app_mod._build_cascade()
+    names = [name for name, _prov, _key in cascade._providers.keys()] if False else None
+    # _candidate_names 是 plan 输入序;_providers 是 dict(无序),改看 _candidate_names。
+    assert cascade._candidate_names[0] == "realprov", "真 provider 必须在候选序首位(修 B1)"
+    assert cascade._candidate_names[-1] == "mock", "mock 必须在最后兜底(修 B1)"
+

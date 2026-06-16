@@ -32,18 +32,21 @@ def _build_cascade() -> Cascade:
     """构造生产 Cascade(模块级单例):mock 兜底 + 真 provider(配了 key 的)入候选池。
 
     候选池:
-      - MockProvider(router-policy.yaml 的 mock 条目,始终在池,test_health 守绿 + 兜底)
-      - 真 OpenAIProvider(mnfst 清单里 api_key_env 在环境有值的 entry,S2.3 真集成)
-    缺 key 的真 provider 自动跳过(不崩,可渐进接入);key 安全:breaker account_key 用 env 名。
-    策略 entries 合并 policy + manifest(后者补 tier/is_free/cost 给排序键 + matcher)。
+      - 真 OpenAIProvider(mnfst 清单里 api_key_env 在环境有值的 entry,**在前**,S2.3 真集成)
+      - MockProvider(router-policy.yaml 的 mock 条目,**最后兜底**——真 provider 全失败才用)
+    顺序关键(修 B1 mock 支配):mock 与真 provider 排序键全平局(is_free/cost 相同)时,
+    plan() 稳定排序保持插入序 → 真 provider 必须在前才会被优先调用;否则 mock 链首即成功,
+    真 provider 形同虚设。无 key 时 candidates=[mock] → mock 正常(test_health 守绿)。
     """
     pol = policy()
     manifest_entries = load_manifest()
     # entries map:policy(mock)+ manifest(真),供 EpsilonGreedy 排序键 + TierMatcher 用。
     entries = {e.name: e for e in (*pol.providers, *manifest_entries)}
 
-    candidates: list = [(e.name, MockProvider(), e.name) for e in pol.providers]
-    candidates.extend(build_adapters(manifest_entries))  # 真 adapter(配了 key 的)
+    real_adapters = build_adapters(manifest_entries)  # 配了 key 的真 adapter
+    mock_candidates = [(e.name, MockProvider(), e.name) for e in pol.providers]
+    # 真 provider 在前,mock 最后兜底(修 B1)。
+    candidates: list = [*real_adapters, *mock_candidates]
 
     return Cascade(
         store=TraceStore(_DATA_DIR / "trace.db"),
