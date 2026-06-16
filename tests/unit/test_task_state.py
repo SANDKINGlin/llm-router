@@ -263,9 +263,34 @@ def test_heartbeat_running_only_and_updates(tmp_path):
             await store.start("job-1")
             old = (await store.get("job-1")).heartbeat_at
             await store.heartbeat("job-1", at="2026-01-01T00:00:00+00:00")
-            new = (await store.get("job-1")).heartbeat_at
-            assert new == "2026-01-01T00:00:00+00:00"
-            assert new != old
+            row = await store.get("job-1")
+            assert row.heartbeat_at == "2026-01-01T00:00:00+00:00"
+            assert row.heartbeat_at != old
+            # updated_at 应用 wall-clock(OpenCode #2):即便 at 是旧时刻,
+            # updated_at 也应是「现在」,不能等于 at。
+            assert row.updated_at != row.heartbeat_at
+        finally:
+            await store.close()
+
+    _run(body())
+
+
+@pytest.mark.parametrize("setup_state", ["completed", "failed"])
+def test_heartbeat_rejected_on_terminal_and_failed(tmp_path, setup_state):
+    """completed/failed 上 heartbeat 抛非法转换(OpenCode #6 补的非 running 拒绝路径)。"""
+
+    async def body():
+        store = TaskStateStore(tmp_path / "task_state.db")
+        await store.init()
+        try:
+            await store.create("job-1")
+            await store.start("job-1")
+            if setup_state == "completed":
+                await store.mark_completed("job-1")
+            else:
+                await store.mark_failed("job-1", error="x")
+            with pytest.raises(InvalidStateTransitionError):
+                await store.heartbeat("job-1")
         finally:
             await store.close()
 
@@ -290,6 +315,104 @@ def test_stale_running_detects_dead_tasks(tmp_path):
             ids = {r.task_id for r in stale}
             assert ids == {"B"}, f"只应捞出僵死的 B,实际 {ids}"
             assert stale[0].state is State.RUNNING
+        finally:
+            await store.close()
+
+    _run(body())
+
+
+def test_stale_running_mixed_format_robust(tmp_path):
+    """OpenCode #1/#3:heartbeat 带微秒(生产 _now_iso 真实形态)vs cutoff 整秒,
+    Python 端 datetime 比较必须仍正确(字典序会在此处错乱)。"""
+
+    async def body():
+        store = TaskStateStore(tmp_path / "task_state.db")
+        await store.init()
+        try:
+            # 僵死:2020 年,但带微秒(真实 _now_iso 形态)
+            await store.create("dead-micro")
+            await store.start("dead-micro")
+            await store.heartbeat(
+                "dead-micro", at="2020-06-01T12:00:00.335016+00:00"
+            )
+            # 活:now(新)
+            await store.create("alive")
+            await store.start("alive")
+
+            # cutoff 用整秒格式(无微秒)——字典序会因 '+'<'.' 错乱,Python 解析不会
+            stale = await store.stale_running("2025-01-01T00:00:00+00:00")
+            ids = {r.task_id for r in stale}
+            assert ids == {"dead-micro"}, (
+                f"带微秒的僵死心跳须被正确捞出(字典序会漏检),实际 {ids}"
+            )
+        finally:
+            await store.close()
+
+    _run(body())
+
+
+def test_stale_running_empty_sort_and_non_running_excluded(tmp_path):
+    """OpenCode #5:空结果 + 升序排序 + 非 running(failed/completed/pending)不捞出。"""
+
+    async def body():
+        store = TaskStateStore(tmp_path / "task_state.db")
+        await store.init()
+        try:
+            # 空:无任何 running 任务
+            assert await store.stale_running("2025-01-01T00:00:00+00:00") == []
+
+            # 两个僵死 running,心跳时刻不同;另放 failed/completed/pending(都不应被捞)
+            await store.create("old")
+            await store.start("old")
+            await store.heartbeat("old", at="2019-01-01T00:00:00+00:00")
+            await store.create("newer")
+            await store.start("newer")
+            await store.heartbeat("newer", at="2021-01-01T00:00:00+00:00")
+
+            await store.create("f")
+            await store.start("f")
+            await store.mark_failed("f", error="x")  # failed,旧心跳但不 running
+            await store.create("c")
+            await store.start("c")
+            await store.mark_completed("c")  # completed
+            await store.create("p")  # pending(无心跳)
+
+            stale = await store.stale_running("2025-01-01T00:00:00+00:00")
+            ids = [r.task_id for r in stale]
+            assert ids == ["old", "newer"], f"只捞 running 僵死,实际 {ids}"
+            # 升序:old(2019) 在 newer(2021) 前
+            assert stale[0].task_id == "old"
+            assert stale[1].task_id == "newer"
+        finally:
+            await store.close()
+
+    _run(body())
+
+
+def test_concurrent_start_loses_with_optimistic_lock(tmp_path):
+    """OpenCode #4:两协程并发 start 同一 pending,一成功一抛 InvalidStateTransitionError。"""
+
+    async def body():
+        store = TaskStateStore(tmp_path / "task_state.db")
+        await store.init()
+        try:
+            await store.create("race")
+
+            results = {"ok": 0, "conflict": 0}
+
+            async def attempt():
+                try:
+                    await store.start("race")
+                    results["ok"] += 1
+                except InvalidStateTransitionError:
+                    results["conflict"] += 1
+
+            # 同一连接上并发:读-改-写非原子,但乐观锁 WHERE state=? 保证最多一者命中
+            await asyncio.gather(attempt(), attempt(), attempt())
+            assert results["ok"] == 1, f"只应一者抢到,实际 ok={results['ok']}"
+            assert results["conflict"] == 2, (
+                f"其余应抛冲突,实际 conflict={results['conflict']}"
+            )
         finally:
             await store.close()
 

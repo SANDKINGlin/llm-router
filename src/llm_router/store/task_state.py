@@ -21,9 +21,17 @@ completed 为终态,无出边。
 `UPDATE ... WHERE task_id=? AND state=<读到的旧态>` 乐观锁——并发改了状态则 rowcount=0,
 抛 InvalidStateTransitionError,由调用方决策(不在数据层自旋)。
 
-⚠️ 未经 HERMES 对抗审查:本会话 HERMES 深度 review 历史性 timeout(见交班 §三.2),
-  且本文件为 trace.py(CAS)+ token_ledger.py(record)两已审模式的忠实镜像,数据层无
-  契约面/安全边界,按对抗规则「降级模式」推进 + CC 自查。下个会话额度宽松时可补审。
+对抗审查记录:HERMES 本会话不可用(历史性 timeout),改由 **OpenCode(deepseek-v4-pro
+异构模型,--pure 隔离 mem,项目目录运行)对抗审 [CHALLENGE 10 项]**,全已修:
+  - HIGH #1:stale_running 原用 SQL 字符串比较,但 isoformat() 在 microsecond≠0 时
+    产 '.xxx+00:00'、==0 时产 '+00:00',因 '+'(0x2B) < '.'(0x2E) 字典序会错乱 →
+    改 **Python 端 datetime.fromisoformat() 比较 + 排序**(格式无关)。
+  - MEDIUM #2:heartbeat 的 updated_at 改用 wall-clock(_now_iso),仅 heartbeat_at 用 at。
+  - MEDIUM #3-#6:补测试(混格式 stale / 并发双 start 乐观锁 / stale 空+排序+非 running 排除 /
+    heartbeat 在 completed|failed 上拒绝)。
+  - MEDIUM #7-#8:删自我辩护性注释分句。
+  - LOW #9:删未引用的死码 TASK_STATE_COLUMNS。
+  - LOW #10:columns() 保留(贴 trace/ledger 的 ops/自省模式)。
 """
 from __future__ import annotations
 
@@ -48,19 +56,6 @@ CREATE TABLE IF NOT EXISTS task_state (
 );
 CREATE INDEX IF NOT EXISTS idx_task_state_state ON task_state(state);
 """
-
-# 蓝图 §4 S2.5 的字段(schema.sql 权威字段名)。
-TASK_STATE_COLUMNS: tuple[str, ...] = (
-    "task_id",
-    "state",
-    "attempts",
-    "retry_count",
-    "last_error",
-    "heartbeat_at",
-    "created_at",
-    "updated_at",
-)
-
 
 class State(str, Enum):
     """任务四态。str 枚举:可直接与 DB 文本比较/绑定。"""
@@ -106,7 +101,7 @@ def _now_iso() -> str:
 class TaskStateStore:
     """task_state.db 长任务状态机持久化(数据层)。
 
-    状态转换表(由各方法的源态检查编码,无独立 _ALLOWED 表以避 YAGNI 死码):
+    状态转换表(由各方法的源态检查编码):
         pending   → running, failed
         running   → completed, failed
         failed    → running (重试)
@@ -280,10 +275,11 @@ class TaskStateStore:
         if row.state is not State.RUNNING:
             raise InvalidStateTransitionError(row.state, "(heartbeat)")
         ts = at or _now_iso()
+        now = _now_iso()  # updated_at 始终反映真实修改时刻(OpenCode #2),与心跳时刻解耦
         cur = await self._db.execute(
             "UPDATE task_state SET heartbeat_at = ?, updated_at = ? "
             "WHERE task_id = ? AND state = ?",
-            (ts, ts, task_id, row.state.value),
+            (ts, now, task_id, row.state.value),
         )
         if cur.rowcount == 0:
             raise InvalidStateTransitionError(row.state, "(heartbeat)")
@@ -293,16 +289,25 @@ class TaskStateStore:
     async def stale_running(self, cutoff_iso: str) -> list[TaskStateRow]:
         """返回 running 且 heartbeat_at 早于 cutoff_iso 的任务(僵死候选)。
 
-        heartbeat_at 为统一 UTC ISO 字符串,字典序即时间序,可直接 `<` 比较。
-        heartbeat_at 为 NULL(从未 start 刷新过)的任务不计入(它们无心跳基线)。
-        按 heartbeat_at 升序(最老的最先该回收)。
+        **比较在 Python 端用 datetime.fromisoformat() 解析**(非 SQL 字符串比较):
+        isoformat() 在 microsecond==0 时省略小数 → `+00:00`,非零时带 `.xxx+00:00`;
+        因 ASCII `'+'`(0x2B) < `'.'`(0x2E),字典序比较在混合格式下会错乱 → 僵死漏检
+        (OpenCode 对抗审 #1)。Python datetime 比较无此问题。候选集受 `state=running`
+        限制(长任务在跑的通常很少),全拉再过滤成本低。cutoff_iso 与 heartbeat_at
+        均须可被 fromisoformat 解析(标准 ISO 格式,_now_iso 满足)。
+        heartbeat_at 为 NULL(从未 start 刷新过)的不计入。按时刻升序(最老先回收)。
         """
+        cutoff = datetime.fromisoformat(cutoff_iso)
         async with self._db.execute(
             "SELECT task_id, state, attempts, retry_count, last_error, "
             "       heartbeat_at, created_at, updated_at "
-            "FROM task_state WHERE state = ? AND heartbeat_at IS NOT NULL "
-            "AND heartbeat_at < ? ORDER BY heartbeat_at ASC",
-            (State.RUNNING.value, cutoff_iso),
+            "FROM task_state WHERE state = ? AND heartbeat_at IS NOT NULL",
+            (State.RUNNING.value,),
         ) as cur:
             rows = await cur.fetchall()
-        return [self._row(r) for r in rows]
+        parsed = [
+            (self._row(r), datetime.fromisoformat(r["heartbeat_at"])) for r in rows
+        ]
+        parsed = [(row, ts) for row, ts in parsed if ts < cutoff]
+        parsed.sort(key=lambda pair: pair[1])
+        return [row for row, _ in parsed]
