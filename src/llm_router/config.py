@@ -21,6 +21,10 @@ class ProviderEntry(BaseModel):
     (design.md 约束#3 字典序 `(capability_match DESC, is_free DESC, 倍率 ASC)`)。
     REQUIRED 而非 Optional——fail-fast:provider 不声明 cost 状态 → 配置加载 ValidationError,
     防真 provider 被静默当 free(破坏"免费对口严格优先")。
+
+    model(S2.3 新增,Optional):真 provider 调用时指定的模型名(喂 OpenAIProvider.model)。
+    D4 解锁:S2.1b 时 defer(无真 provider 用到);S2.3 接真 provider 入候选池时需要。
+    mock / 未设 → None(adapter 用各自默认)。Phase2 Scanner 填真模型。
     """
 
     name: str
@@ -29,6 +33,7 @@ class ProviderEntry(BaseModel):
     cooldown_s: int
     is_free: bool
     cost_multiplier: float
+    model: str | None = None
     base_url: str | None = None
     api_key_env: str | None = None
 

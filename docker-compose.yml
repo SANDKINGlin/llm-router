@@ -1,0 +1,17 @@
+# docker-compose.yml — llm-router 数据面一键起。
+# 用法:cp .env.example .env && 填 key → docker compose up -d
+# 换 key:改 .env → docker compose restart
+# 搬家/备份:复制 ./data + .env 到新机 → docker compose up
+services:
+  llm-router:
+    build: .
+    image: llm-router:latest
+    container_name: llm-router
+    ports:
+      - "8789:8789"          # 数据面(OpenAI /v1/chat/completions + Anthropic /v1/messages + /healthz)
+    volumes:
+      - ./data:/app/data     # 迁移单元:复制这个目录就是备份/搬家(trace/circuit 等 SQLite)
+    env_file:
+      - .env                 # keys(GROQ_API_KEY / NVIDIA_API_KEY 等);.env 已 gitignore
+    restart: unless-stopped
+# 管理面 :8790 依赖 add-admin-webui change,届时在此加第二个 service 或端口。

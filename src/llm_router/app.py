@@ -20,6 +20,7 @@ from .api.epsilon_greedy import EpsilonGreedy
 from .config import policy
 from .providers.mock import MockProvider
 from .resilience.circuit_breaker import CircuitBreaker
+from .scanner.mnfst import build_adapters, load_manifest
 from .store.trace import TraceStore
 
 app = FastAPI(title="llm-router", version="0.0.1")
@@ -28,15 +29,22 @@ _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 def _build_cascade() -> Cascade:
-    """从 router-policy.yaml 构造生产 Cascade(模块级单例)。
+    """构造生产 Cascade(模块级单例):mock 兜底 + 真 provider(配了 key 的)入候选池。
 
-    候选 = policy 每个 entry 实例化对应 Provider。Phase1 全是 MockProvider
-    (D4:adapter test-only;真 provider 接入留 S2.3 Scanner 按 base_url/api_key_env 建)。
-    key = entry.name(Phase1 mock 无 key,用 name 占位;breaker 按 (provider, key) 记账)。
+    候选池:
+      - MockProvider(router-policy.yaml 的 mock 条目,始终在池,test_health 守绿 + 兜底)
+      - 真 OpenAIProvider(mnfst 清单里 api_key_env 在环境有值的 entry,S2.3 真集成)
+    缺 key 的真 provider 自动跳过(不崩,可渐进接入);key 安全:breaker account_key 用 env 名。
+    策略 entries 合并 policy + manifest(后者补 tier/is_free/cost 给排序键 + matcher)。
     """
     pol = policy()
-    entries = {e.name: e for e in pol.providers}
-    candidates = [(e.name, MockProvider(), e.name) for e in pol.providers]
+    manifest_entries = load_manifest()
+    # entries map:policy(mock)+ manifest(真),供 EpsilonGreedy 排序键 + TierMatcher 用。
+    entries = {e.name: e for e in (*pol.providers, *manifest_entries)}
+
+    candidates: list = [(e.name, MockProvider(), e.name) for e in pol.providers]
+    candidates.extend(build_adapters(manifest_entries))  # 真 adapter(配了 key 的)
+
     return Cascade(
         store=TraceStore(_DATA_DIR / "trace.db"),
         breaker=CircuitBreaker(_DATA_DIR / "circuit.db"),

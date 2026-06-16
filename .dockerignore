@@ -1,0 +1,17 @@
+# .dockerignore — 缩小构建上下文(不进 image 的东西)。
+.venv/
+__pycache__/
+*.pyc
+data/
+.git/
+.gitignore
+.pytest_cache/
+*.egg-info/
+tests/
+archive/
+mock_data/
+Dockerfile
+docker-compose.yml
+.env
+.env.example
+*.md

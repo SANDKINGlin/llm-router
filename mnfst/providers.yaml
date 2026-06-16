@@ -1,0 +1,27 @@
+# mnfst/providers.yaml — Scanner 静态清单(Phase1 手维护;Phase2 由 scanner/dynamic.py 自动 diff 更新)。
+# 每条 = 一个免费/低成本 provider 的完整配置(→ ProviderEntry → 真 adapter 候选)。
+# key 不写这里!只写环境变量名(api_key_env);真 key 放 .env / 环境变量(S2.3 build_adapters 读)。
+# 想接某个 provider:取消注释 + 在环境设对应 api_key_env 的值 → 重启 → 自动入候选池。
+# 缺 key 或注释掉 → 跳过(不崩),mock 始终在池兜底。
+providers:
+  # ── Groq(免费档,fast,OpenAI 兼容)── 设 GROQ_API_KEY 后启用 ──
+  - name: groq
+    tier: fast
+    quota: 1000000
+    cooldown_s: 30
+    is_free: true
+    cost_multiplier: 0.0
+    model: llama-3.3-70b-versatile
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: GROQ_API_KEY
+
+  # ── NVIDIA NIM(免费档,strong,OpenAI 兼容)── 设 NVIDIA_API_KEY 后启用 ──
+  - name: nvidia
+    tier: strong
+    quota: 500000
+    cooldown_s: 30
+    is_free: true
+    cost_multiplier: 0.0
+    model: nvidia/llama-3.1-nemotron-70b-instruct
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key_env: NVIDIA_API_KEY
