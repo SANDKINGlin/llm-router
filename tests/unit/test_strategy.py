@@ -27,14 +27,14 @@ def test_strategy_subclass_injectable():
     class FirstCandidate(RoutingStrategy):
         """桩子类:总选第一个候选(S1.3 只验可注入,非真实策略)。"""
 
-        def select_provider(self, candidates, context):  # type: ignore[override]
-            return candidates[0]
+        def plan(self, candidates, context):  # type: ignore[override]
+            return list(candidates)  # 原序:select_provider()=plan()[0] 取首
 
     class LastCandidate(RoutingStrategy):
         """桩子类:总选最后一个候选。"""
 
-        def select_provider(self, candidates, context):  # type: ignore[override]
-            return candidates[-1]
+        def plan(self, candidates, context):  # type: ignore[override]
+            return list(reversed(candidates))  # 倒序:plan()[0] 取末
 
     candidates = ["alpha", "beta", "gamma"]
     ctx = {"session_id": "s1", "task_type": "chat"}

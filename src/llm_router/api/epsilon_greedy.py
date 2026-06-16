@@ -74,20 +74,28 @@ class EpsilonGreedy(RoutingStrategy):
         entry = self._entries[name]
         return (not entry.is_free, entry.cost_multiplier)
 
-    def select_provider(  # type: ignore[override]
+    def plan(  # type: ignore[override]
         self, candidates: list[str], context: dict
-    ) -> str:
+    ) -> list[str]:
+        """返回完整尝试链:ε 探索选 primary(每请求计 1 次,非每跳),其余按优先级序。
+
+        单一排序源(_sort_key)+ 单一计数点(_requests)+ 零漂移(HERMES [CONSENSUS] 2026-06-15,
+        优于初版 select_provider+fallback_order 双方法)。select_provider 继承 ABC 包装 = plan(...)[0]。
+        """
         if not candidates:
             raise NoCandidateError("候选 provider 列表为空,无法选择")
         missing = [c for c in candidates if c not in self._entries]
         if missing:
             raise ValueError(f"候选 {missing!r} 不在 entry map 中(配置不一致)")
 
-        self._requests += 1  # 计入本次选择,驱动 ε 衰减
+        self._requests += 1  # 计入本次选择,驱动 ε 衰减(每请求一次,非每跳)
 
         ordered = sorted(candidates, key=self._sort_key)
 
-        # ε 概率探索:从有序候选随机挑;否则利用最优 ordered[0]。
+        # ε 概率探索:从有序候选随机挑 primary;否则利用最优 ordered[0]。
         if self._chooser() < self._epsilon():
-            return ordered[self._explorer(len(ordered))]
-        return ordered[0]
+            primary = ordered[self._explorer(len(ordered))]
+        else:
+            primary = ordered[0]
+        # 尝试链:primary 在前,fallback 按优先级序(去掉 primary)。
+        return [primary] + [c for c in ordered if c != primary]

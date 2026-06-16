@@ -5,14 +5,18 @@ uvicorn[standard]>=0.29
 pydantic>=2.6
 pyyaml>=6.0
 aiosqlite>=0.20
-# Phase1 provider 适配:P8 决策 defer 到 S2.x 接真 provider 时启用
-# 理由:litellm 拉 openai/anthropic/cohere 等全家桶(上百传递依赖 + 海量 hash);
-#       Phase1 用 MockProvider(src 零 import litellm,已验),S2.x 落地时去注释重锁即可。
-# ⚠️ S2.x 启用时:先跑 `uv pip uninstall litellm`(若有手装残留)或用干净 venv,
-#    再去注释 + 重跑 scripts/hash_lock.sh,避免手装版本与新锁冲突。
+# Phase1 provider 适配:S2.1b 真 OpenAI adapter(openai SDK,异步;respx 测试)。
+# 注:litellm 全家桶仍 defer(拉 openai/anthropic/cohere 上百传递依赖);S2.1b 只直接用
+#     openai SDK(轻,AsyncOpenAI + httpx 底座),不走 litellm 抽象。src/llm_router/providers/openai.py。
+# ⚠️ litellm 若将来启用:先 `uv pip uninstall litellm`(手装残留)或干净 venv,再去注释重锁。
+openai>=1.0
 # litellm>=1.40
 # 测试/开发
 pytest>=8.0
 httpx>=0.27
+respx>=0.21   # S2.1b adapter 测试:httpx 传输层 mock,注入真 openai SDK 代码路径(零 key 零成本)
+# Phase2 能力匹配(Phase2 启用时去注释)
+# sentence-transformers>=2.7
+
 # Phase2 能力匹配(Phase2 启用时去注释)
 # sentence-transformers>=2.7
