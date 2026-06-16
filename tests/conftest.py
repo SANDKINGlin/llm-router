@@ -1,15 +1,27 @@
-"""共享 pytest fixtures。
+"""共享 pytest fixtures + 测试环境 hermetic 化。
 
-_no_proxy_env(autouse):本机 clash-verge 在 env 注入 SOCKS/HTTP 代理
-(all_proxy=socks5://..., http(s)_proxy=http://...),会泄漏进 httpx。
-openai.AsyncOpenAI 构造时 httpx 读到 socks 代理 → 尝试 socks transport
-(socksio 未装)→ ImportError,且与 respx 传输层 mock 无关(请求还没发就在构造期崩)。
-测试必须 hermetic:respx 在传输层 mock,不需要真代理。故每条测试前清掉代理 env。
-不影响既有 83 基线:那些测试用 FastAPI TestClient(进程内 ASGI),不发真 socket。
+两件事:
+1. _no_proxy_env(autouse):本机 clash-verge 在 env 注入 SOCKS/HTTP 代理,泄漏进 httpx 致
+   AsyncOpenAI 构造 socks transport(socksio 未装)ImportError。每条测试前清代理 env。
+2. 模块级清 provider API key env:app._build_cascade 在 **import 期** 读 os.environ 建候选池,
+   若主机 env 泄漏了真 key(如 OPENROUTER_API_KEY)→ 建真 adapter → 基线测试(mock-only 假设)
+   失败(真 provider 抢答)。故 conftest import 时(早于 test 模块 import app)清掉 provider key,
+   保证 app import 期是 mock-only。真 key 测试另写(显式注入 env + 重建 cascade,不走 import 单例)。
 """
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# 模块级:conftest import 时(早于 test 模块 import llm_router.app)清 provider key env,
+# 保证 app import 期 _build_cascade 是 mock-only(hermetic 基线)。
+_PROVIDER_KEY_ENV = (
+    "OPENROUTER_API_KEY", "GROQ_API_KEY", "NVIDIA_API_KEY",
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MISTRAL_API_KEY",
+)
+for _k in _PROVIDER_KEY_ENV:
+    os.environ.pop(_k, None)
 
 _PROXY_ENV_KEYS = (
     "ALL_PROXY", "all_proxy",
@@ -23,3 +35,4 @@ _PROXY_ENV_KEYS = (
 def _no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in _PROXY_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+
