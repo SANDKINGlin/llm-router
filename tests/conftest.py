@@ -10,7 +10,10 @@
 """
 from __future__ import annotations
 
+import glob
 import os
+import sqlite3
+from collections.abc import Iterator
 
 import pytest
 
@@ -35,4 +38,29 @@ _PROXY_ENV_KEYS = (
 def _no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in _PROXY_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+def _checkpoint_data_dbs() -> None:
+    """Checkpoint(TRUNCATE)所有 data/*.db,清脏 WAL。
+
+    防"脏 WAL 间歇性挂起全量 pytest"(交班 §三.12/§六.4 实犯多次):被中断的 pytest 在
+    真 data/ 留 .db-wal,下次全量开库(test_health.py 经模块级 _cascade 单例碰真库)可能卡
+    死被 timeout 杀。session 开跑前 + 跑完后各清一次,根除间歇性假绿。busy 忽略:有连接持
+    有时 checkpoint 返回 busy=1 跳过该次,不抛错中断测试。
+    """
+    for f in glob.glob("data/*.db"):
+        try:
+            conn = sqlite3.connect(f)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _wal_checkpoint_guard() -> Iterator[None]:
+    """会话开跑前 + 跑完后 checkpoint data/*.db(防脏 WAL 间歇性挂起,见 _checkpoint_data_dbs)。"""
+    _checkpoint_data_dbs()
+    yield
+    _checkpoint_data_dbs()
 
