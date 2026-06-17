@@ -19,24 +19,27 @@
 |---|---|---|---|---|---|---|
 | A.1 | 验证 llm-router:test 镜像 + 源码 + git HEAD | 4 项命令输出符合预期,工作树干净 | - | cc:完了 | - | 2026-06-17 18:42 |
 | A.2 | OpenSpec 立 change + 三件套 + specs/ | openspec validate 通过 | - | cc:完了 | - | 2026-06-17 18:45 |
-| A.3 | 写 Plans.md 顶层账本(v2 格式) | Plans.md 存在,8 行 task 全列 | A.1 | cc:WIP | - | - |
-| A.3.5 | 🔴 OpenCode 节点 1 审查(架构定稿) | evidence/opencode-checkpoint-1.txt 含 approved | A.2,A.3 | cc:TODO | - | - |
-| A.4 | docker run 起容器 + /health 验证 | curl /health 返回 ok,evidence/docker-ps.txt 落盘 | A.1,A.2,A.3.5 | cc:TODO | - | - |
-| A.5 | 写最小 CLI(test-provider --mock) | pytest 绿 + 实际命令输出 [mock] openai OK | A.4 | cc:TODO | - | - |
-| A.6 | policy_enforcer 单测加强(同 provider 多账号) | 新测试存在,全量 pytest 零回归 | A.5 | cc:TODO | - | - |
-| A.4.5 | 🔴 OpenCode 节点 2 审查(编码完成) | evidence/opencode-checkpoint-2.txt 含 approved | A.4-A.6 | cc:TODO | - | - |
-| A.7 | git commit + tag v0.1.0-phaseA | commit + tag 在 git log 顶部 | A.4.5 | cc:TODO | - | - |
-| A.6.5 | 🔴 OpenCode 节点 3 审查(交付前) | evidence/opencode-checkpoint-3.txt 含 ship | A.4-A.6 | cc:TODO | - | - |
-| A.8 | 收尾(tasks.md 勾完 + evidence + SUMMARY) | openspec validate 通过,evidence ≥ 3 | A.6.5,A.7 | cc:TODO | - | - |
+| A.3 | 写 Plans.md 顶层账本(v2 格式) | Plans.md 存在,8 行 task 全列 | A.1 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:05 |
+| A.3.5 | 🔴 OpenCode 节点 1 审查(架构定稿) | evidence/opencode-checkpoint-1.txt 含 approved | A.2,A.3 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:06 |
+| A.4 | docker run 起容器 + /health 验证 | curl /health 返回 ok,evidence/docker-ps.txt 落盘 | A.1,A.2,A.3.5 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:06 |
+| A.5 | 写最小 CLI(test-provider --mock) | pytest 绿 + 实际命令输出 [mock] openai OK | A.4 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:06 |
+| A.6 | policy_enforcer 单测加强(同 provider 多账号) | 新测试存在,全量 pytest 零回归 | A.5 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:06 |
+| A.4.5 | 🔴 OpenCode 节点 2 审查(编码完成) | evidence/opencode-checkpoint-2.txt 含 approved | A.4-A.6 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:06 |
+| A.7 | git commit + tag v0.1.0-phaseA | commit + tag 在 git log 顶部 | A.4.5 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:06 |
+| A.6.5 | 🔴 OpenCode 节点 3 审查(交付前) | evidence/opencode-checkpoint-3.txt 含 ship | A.4-A.6 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:15 |
+| A.8 | 收尾(tasks.md 勾完 + evidence + SUMMARY) | openspec validate 通过,evidence ≥ 3 | A.6.5,A.7 | cc:完了 [5f51f1d] | 5f51f1d | 2026-06-17 19:15 |
 
 ## 状态统计
 
 - **总任务**:11(含 3 个 OpenCode 审查节点)
-- **已完成**:2(A.1 + A.2)
-- **进行中**:1(A.3)
-- **待办**:8
-- **进度**:18%(2/11)
-- **OpenCode 审查门**:3 个,均未触发
+- **已完成**:11(A.1 + A.2 + A.3 + A.3.5 + A.4 + A.4.5 + A.5 + A.6 + A.6.5 + A.7 + A.8)
+- **进行中**:0
+- **待办**:0
+- **进度**:100%(11/11)
+- **OpenCode 审查门**:3/3 approved + ship
+  - 节点 1(架构定稿):approved
+  - 节点 2(编码完成):approved
+  - 节点 3(交付前):ship
 
 ## 决策日志(本会话)
 
