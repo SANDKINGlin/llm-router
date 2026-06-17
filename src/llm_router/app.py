@@ -7,7 +7,9 @@ S2.x 接真 provider 时由 Scanner(S2.3)按 entry.base_url/api_key_env 建真 a
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,15 +20,15 @@ from pydantic import BaseModel, Field
 from .api.cascade import Cascade
 from .api.epsilon_greedy import EpsilonGreedy
 from .config import policy
+from .health.probe import HealthProber
+from .providers.base import Provider
 from .providers.mock import MockProvider
 from .resilience.circuit_breaker import CircuitBreaker
 from .scanner.mnfst import build_adapters, load_manifest
+from .store.health_store import HealthStore
 from .store.trace import TraceStore
 
-app = FastAPI(title="llm-router", version="0.0.1")
-
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-
 
 def _build_cascade() -> Cascade:
     """构造生产 Cascade(模块级单例):mock 兜底 + 真 provider(配了 key 的)入候选池。
@@ -37,6 +39,11 @@ def _build_cascade() -> Cascade:
     顺序关键(修 B1 mock 支配):mock 与真 provider 排序键全平局(is_free/cost 相同)时,
     plan() 稳定排序保持插入序 → 真 provider 必须在前才会被优先调用;否则 mock 链首即成功,
     真 provider 形同虚设。无 key 时 candidates=[mock] → mock 正常(test_health 守绿)。
+
+    **每次调用读最新 manifest + env**(load_manifest/build_adapters 在内),供
+    test_app_build_cascade_orders_real_before_mock 注入临时 manifest 后验证顺序。
+    S2.8c:注入共享 HealthStore(data/health.db)——Cascade 路由前 hard-skip 死亡 key(Face 2),
+    lifespan 起探活循环写它 + 喂 CB(Face 1/3)。Cascade 不 init(fail-open 读),lifespan init。
     """
     pol = policy()
     manifest_entries = load_manifest()
@@ -53,10 +60,76 @@ def _build_cascade() -> Cascade:
         breaker=CircuitBreaker(_DATA_DIR / "circuit.db"),
         strategy=EpsilonGreedy(entries),
         candidates=candidates,
+        health_store=HealthStore(_DATA_DIR / "health.db"),
     )
 
 
 _cascade = _build_cascade()
+
+# S2.8c 探活目标:真 provider(排 Mock——mock 探活恒活无信号)。模块级算一次(import 期,
+# 与 _cascade 同读一次 manifest/env,一致)。spec Req 1 ping 全部 fallback/paid key;
+# Phase1 provider 少,全 ping(不取"前 2",YAGNI;key 多时再限)。
+_probe_targets: list[tuple[str, Provider]] = [
+    (name, provider) for name, provider, _key in build_adapters(load_manifest())
+]
+
+
+def _make_lifespan(
+    cascade: Cascade,
+    probe_targets: list[tuple[str, Provider]],
+    *,
+    interval_seconds: float = 300.0,
+    probe_timeout_seconds: float = 10.0,
+):
+    """S2.8c Face 1:构造 FastAPI lifespan——startup 起探活循环,shutdown 停。
+
+    抽成工厂(非模块级闭包)以便单测注入 tmp cascade/targets 确定性验证 task 生命周期
+    (不依赖 TestClient 是否跑 lifespan)。startup:init 共享 health_store + create_task
+    prober.run_loop(stop)(on_alive=cascade.feed_probe_success 喂 HALF_OPEN,Face 3);
+    **仅当有探活目标才起 task**(无真 key → 空转无意义)。shutdown:stop_event.set + cancel
+    task + store.close。
+    """
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        store = cascade.health_store
+        if store is not None:
+            await store.init()
+        stop_event = asyncio.Event()
+        task = None
+        if probe_targets:
+            prober = HealthProber(
+                store,
+                probe_targets,
+                interval_seconds=interval_seconds,
+                probe_timeout_seconds=probe_timeout_seconds,
+                on_alive=cascade.feed_probe_success,
+            )
+            task = asyncio.create_task(prober.run_loop(stop_event))
+        app.state.probe_stop = stop_event
+        app.state.probe_task = task
+        try:
+            yield
+        finally:
+            stop_event.set()
+            if task is not None:
+                # 优雅退出:stop_event 让 run_loop 在下个循环检查点退出(probe.py #3 设计)。
+                # **不 task.cancel()**——避免在 record_probe 的 DB 写中途注入 CancelledError
+                # (probe.py #3 对抗审结论)。await task 等其退出:sleep 期被 wait_for(stop_event.wait())
+                # 即时唤醒,最坏等完一个 in-flight tick(≤ probe_timeout × providers,Phase1 秒级)。
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            if store is not None:
+                await store.close()
+
+    return _lifespan
+
+
+app = FastAPI(
+    title="llm-router", version="0.0.1", lifespan=_make_lifespan(_cascade, _probe_targets)
+)
 
 
 class _Message(BaseModel):

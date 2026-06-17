@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from llm_router.providers.base import Provider, ProviderError
 from llm_router.store.health_store import HealthRow, HealthStore
@@ -37,6 +37,10 @@ class HealthProber:
     """每 interval 秒并发 ping 注入 providers,结果 UPSERT 进 health.db。
 
     侧挂后台循环,不在请求路径。调用方(app lifespan)起 run_loop task,shutdown 取消。
+
+    S2.8c:on_alive 回调——probe 成功时通知调用方(name),供其喂 CB HALF_OPEN 加速恢复
+    (spec Req 3b)。Prober 仍**不判断 CB**(守"只 ping 给它的"),只报成功;失败不报(无信号)。
+    回调抛错被吞(best-effort 喂养,不崩后台循环;record_probe 已先落盘)。
     """
 
     def __init__(
@@ -47,18 +51,21 @@ class HealthProber:
         interval_seconds: float = _DEFAULT_INTERVAL,
         probe_timeout_seconds: float = _DEFAULT_PROBE_TIMEOUT,
         probe_prompt: str = _DEFAULT_PROBE_PROMPT,
+        on_alive: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._store = store
         self._providers = list(providers)
         self._interval = interval_seconds
         self._probe_timeout = probe_timeout_seconds
         self._prompt = probe_prompt
+        self._on_alive = on_alive
 
     async def probe_one(self, name: str, provider: Provider) -> HealthRow:
         """ping 单个 provider,记 record_probe。complete 异常 → alive=False,不上抛。
 
         返回该 provider 当前行(成功 alive=True+latency_ms;超时/异常 alive=False+latency_ms=None)。
         record_probe(store 写)不在 try 内——store 基础设施失败应上抛,由 tick 暴露(#2)。
+        成功后(S2.8c)调 on_alive(name) 喂 CB HALF_OPEN;回调抛错被吞(best-effort,record_probe 已先落盘)。
         """
         start = time.perf_counter()
         alive = False
@@ -78,7 +85,15 @@ class HealthProber:
             _LOG.warning("probe_one(%s) unexpected error; recorded dead", name, exc_info=True)
             alive = False
             latency_ms = None
-        return await self._store.record_probe(name, latency_ms=latency_ms, alive=alive)
+        row = await self._store.record_probe(name, latency_ms=latency_ms, alive=alive)
+        if alive and self._on_alive is not None:
+            try:
+                self._on_alive(name)
+            except Exception:
+                _LOG.warning(
+                    "on_alive(%s) callback error; ignored (best-effort CB feed)", name, exc_info=True
+                )
+        return row
 
     async def tick(self) -> None:
         """并发 ping 全部注入 providers。空列表 no-op。

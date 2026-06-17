@@ -17,12 +17,14 @@ REPLAYED(幂等)直接返缓存不计新 hop;budget=6,第 7 跳(depth 6)被拦�
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from ..providers.base import Provider, ProviderError
-from ..resilience.circuit_breaker import CircuitBreaker, TripReason
+from ..resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReason
 from ..resilience.content_integrity import is_complete
+from ..store.health_store import HealthStore
 from ..routing.hop import (
     DEFAULT_RETRY_BUDGET,
     advance,
@@ -32,6 +34,8 @@ from ..routing.hop import (
 )
 from ..store.trace import AcquireStatus, TraceStore
 from .strategy import RoutingStrategy
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,6 +62,7 @@ class Cascade:
         strategy: RoutingStrategy,
         candidates: list[tuple[str, Provider, str]],
         *,
+        health_store: Optional[HealthStore] = None,
         budget: int = DEFAULT_RETRY_BUDGET,
     ) -> None:
         self._store = store
@@ -69,8 +74,14 @@ class Cascade:
         }
         self._candidate_names: list[str] = [name for name, _p, _k in candidates]
         self._budget = budget
+        self._health_store = health_store  # S2.8c:可选,路由前 hard-skip 死亡 key
         self._store_ready = False
         self._init_lock = asyncio.Lock()
+
+    @property
+    def health_store(self) -> Optional[HealthStore]:
+        """S2.8c:暴露 health_store(lifespan 用同一实例 init + 喂 prober,共享单例)。"""
+        return self._health_store
 
     async def _ensure_store(self) -> None:
         """惰性幂等 init store(双重检查锁 + asyncio.Lock,并发安全)。
@@ -85,6 +96,40 @@ class Cascade:
                 await self._store.init()
                 self._store_ready = True
 
+    async def _surviving_candidates(self) -> list[str]:
+        """S2.8c Face 2 / spec Req 4:路由前 hard-skip health.db 中 alive=False 的 key。
+
+        先于 strategy.plan() 字典序排序(只幸存者进排序池)。从未探活的 provider(不在 db)保留
+        (无信号=不过滤;spec 只剔 alive=False)。health 查询失败 → **fail-open** 返回全候选:
+        health 是非权威新鲜度信号,读不到不该崩请求(最坏多试一个死 key,由 CB/complete 失败兜底)。
+        """
+        if self._health_store is None:
+            return list(self._candidate_names)
+        try:
+            rows = await self._health_store.latest_probe(providers=self._candidate_names)
+        except Exception:
+            _LOG.warning(
+                "health_store 查询失败 → fail-open 不过滤(非权威信号,不崩请求)", exc_info=True
+            )
+            return list(self._candidate_names)
+        dead = {r.provider for r in rows if not r.alive}
+        return [n for n in self._candidate_names if n not in dead]
+
+    def feed_probe_success(self, name: str) -> None:
+        """S2.8c Face 3 / spec Req 3b:探活成功喂 HALF_OPEN 加速恢复。
+
+        **仅当 key 处于 HALF_OPEN** 才 record_success(→CLOSED);OPEN 未到期**不动**(Req 3a:
+        探活不得强制关未到期 OPEN——CB 退避窗口权威,裁决 CB 先判→探活后过滤)。未知 name → noop。
+        Cascade 拥有 breaker + name→key 映射,故 CB 喂养逻辑归此(prober 只报活,不判断 CB)。
+        """
+        entry = self._providers.get(name)
+        if entry is None:
+            return
+        _provider, key = entry
+        ks = self._breaker.get_key_state(name, key)
+        if ks.state == CircuitState.HALF_OPEN:
+            self._breaker.record_success(name, key)
+
     async def run(
         self,
         prompt: str,
@@ -93,11 +138,18 @@ class Cascade:
     ) -> CascadeResult:
         """按 strategy.plan() 序跑 fallback 链。返回 CascadeResult。
 
-        每跳:acquire trace → 幂等 replay 返缓存 → breaker 判 → provider.complete
-        → ProviderError(HARD)/ is_complete False(SOFT_CONTENT)/ 成功。budget 门拦第 7 跳。
+        路由前:S2.8c hard-skip health.db 中 alive=False 的 key(_surviving_candidates),
+        幸存者才进 plan() 字典序排序(spec Req 4)。每跳:acquire trace → 幂等 replay 返缓存
+        → breaker 判(CB 先于探活,Req 3a)→ provider.complete → ProviderError(HARD)/
+        is_complete False(SOFT_CONTENT)/ 成功。budget 门拦第 7 跳。
         """
         await self._ensure_store()
-        chain = self._strategy.plan(self._candidate_names, {})
+        survivors = await self._surviving_candidates()
+        if not survivors:
+            # 全候选死亡或候选为空 → fail-loud 明确失败(对抗审 MED),不依赖"mock 恒存活"隐式
+            # 契约,也不让 plan([]) 抛 opaque NoCandidateError(否则请求 500 + 难诊断)。
+            return CascadeResult(None, None, False, 0, "no_candidates")
+        chain = self._strategy.plan(survivors, {})
 
         parent_trace_id: Optional[str] = None
         prev_provider: Optional[str] = None
