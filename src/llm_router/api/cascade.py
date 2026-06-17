@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from ..config import policy
 from ..providers.base import Provider, ProviderError, Usage
 from ..resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReason
 from ..resilience.content_integrity import is_complete
@@ -35,6 +36,7 @@ from ..routing.hop import (
 )
 from ..store.trace import AcquireStatus, TraceStore
 from .cost_gate import CostGate
+from .gray import gray_release
 from .policy_enforcer import ComplianceError, PolicyEnforcer
 from .strategy import RoutingStrategy
 
@@ -184,6 +186,7 @@ class Cascade:
         prompt: str,
         *,
         correlation_id: str,
+        session_id: str | None = None,
     ) -> CascadeResult:
         """按 strategy.plan() 序跑 fallback 链。返回 CascadeResult。
 
@@ -194,6 +197,11 @@ class Cascade:
 
         最先:S2.7 合规门(layer ①)——配置非合规(同 provider 多账号)→ 拒绝路由,
         不 init store、不 plan、不调 provider(check() 内已记合规日志)。
+
+        session_id(S4.1 灰度,可选):派生自 X-Session-Id / api_key(见 app.py)。None → 不判定。
+        Phase1 范围 A:gray_release 结果只 log + 进 strategy context(**不改链逻辑**——路由层
+        内只一策略,无新旧切换行为;真实行为差异在接入层 D9)。D7/Phase2 多版本时 strategy 读
+        context["gray_released"] 驱动版本切换。不进排序键(routing-priority-principle 不动)。
         """
         if self._policy_enforcer is not None:
             try:
@@ -209,7 +217,23 @@ class Cascade:
             # 全候选死亡或候选为空 → fail-loud 明确失败(对抗审 MED),不依赖"mock 恒存活"隐式
             # 契约,也不让 plan([]) 抛 opaque NoCandidateError(否则请求 500 + 难诊断)。
             return CascadeResult(None, None, False, 0, "no_candidates")
-        chain = self._strategy.plan(survivors, {})
+        # S4.1 灰度判定(机制就位,可观测):session_id 派生 + gray_release 进 context。
+        # Phase1 范围 A:released 只 log + 进 context,**不改链逻辑**(路由层内只一策略,
+        # 无"新旧切换"行为;真实行为差异在接入层 cc-switch/D9)。D7/Phase2 多版本时 strategy
+        # 读 context["gray_released"] 驱动版本切换。不进排序键(routing-priority-principle 不动)。
+        context: dict = {"session_id": session_id}
+        if session_id is not None:
+            pol = policy()
+            released = gray_release(session_id, pol.gray_percent)
+            context["gray_released"] = released
+            _LOG.info(
+                "gray decision: session_id=%s gray_percent=%d released=%s policy_version=%s",
+                session_id,
+                pol.gray_percent,
+                released,
+                pol.policy_version,
+            )
+        chain = self._strategy.plan(survivors, context)
 
         parent_trace_id: Optional[str] = None
         prev_provider: Optional[str] = None

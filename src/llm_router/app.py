@@ -13,13 +13,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .api.cascade import Cascade
 from .api.cost_gate import CostGate
 from .api.epsilon_greedy import EpsilonGreedy
+from .api.gray import derive_session_id
 from .api.policy_enforcer import PolicyEnforcer
 from .config import policy
 from .health.probe import HealthProber
@@ -174,6 +175,23 @@ def _extract_prompt(messages: list[_Message]) -> str:
     return "\n".join(parts) or "ping"
 
 
+def _extract_session_id(request: Request) -> str | None:
+    """S4.1:从请求派生 session_id(D9 灰度切 agent,design line 25/128)。
+
+    优先级:X-Session-Id header(显式)> Authorization Bearer key 派生 > None。
+    api_key 派生 = blake2b(key) → 同 key 同桶 = 天然按 agent 灰度(三 agent 各自 key 不同桶)。
+    空串等同缺失。两者皆无 → None(Cascade 视为不参与灰度判定,不 log)。
+    """
+    explicit = request.headers.get("x-session-id") or None
+    auth = request.headers.get("authorization", "")
+    api_key: str | None = None
+    # Bearer 解析:split(None) 容忍 SP/HTAB 分隔(RFC 用 SP,实践有 tab;OpenCode LOW#2)。
+    parts = auth.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        api_key = parts[1].strip() or None
+    return derive_session_id(api_key, explicit)
+
+
 @app.get("/healthz")
 def healthz() -> JSONResponse:
     """就绪探针。S0.0:返 200。readiness 切片补三库可写+policy加载+CB恢复。"""
@@ -187,13 +205,16 @@ def healthz() -> JSONResponse:
 
 
 @app.post("/v1/chat/completions")
-async def openai_chat(req: _OpenAIRequest) -> dict:
+async def openai_chat(req: _OpenAIRequest, request: Request) -> dict:
     """OpenAI 协议入口。经 Cascade(④)回退编排打到候选 provider 链。Roo/Codex 走这个。
 
     S2.1b:接 Cascade(prompt → strategy.plan 链 → 逐跳 complete + 熔断/完整性/幂等/hop)。
+    S4.1:从 X-Session-Id / Authorization 派生 session_id 传 Cascade(灰度判定,可观测)。
     """
     result = await _cascade.run(
-        _extract_prompt(req.messages), correlation_id=uuid.uuid4().hex
+        _extract_prompt(req.messages),
+        correlation_id=uuid.uuid4().hex,
+        session_id=_extract_session_id(request),
     )
     return {
         "id": "chatcmpl-mock",
@@ -208,13 +229,15 @@ async def openai_chat(req: _OpenAIRequest) -> dict:
 
 
 @app.post("/v1/messages")
-async def anthropic_messages(req: _AnthropicRequest) -> dict:
+async def anthropic_messages(req: _AnthropicRequest, request: Request) -> dict:
     """Anthropic 协议入口。经 Cascade(④)回退编排。CC 走这个。
 
-    S2.1b:接 Cascade。
+    S2.1b:接 Cascade。S4.1:从 X-Session-Id / Authorization 派生 session_id 传 Cascade。
     """
     result = await _cascade.run(
-        _extract_prompt(req.messages), correlation_id=uuid.uuid4().hex
+        _extract_prompt(req.messages),
+        correlation_id=uuid.uuid4().hex,
+        session_id=_extract_session_id(request),
     )
     return {
         "id": "msg_mock",
