@@ -443,3 +443,63 @@ def test_compliance_gate_runs_before_health_filter(tmp_path):
     res = _run(body())
     assert res.last_reason == "compliance_blocked"
     assert spy.queries == 0, "合规门阻断时 health_store 必须零查询(合规先于 health)"
+
+
+# ── Phase A 回归钉子(对应 OpenSpec spec/phase-a-policy-test) ────────────────
+# Phase A 范围内钉住「同 provider 多 key 阻断」运行时行为,作为后续 Phase B/C/D
+# 重构 policy_enforcer 时的回归基线。命名带 phase_a_ 前缀,便于 grep。
+
+
+def test_phase_a_same_provider_two_keys_blocks_at_cascade(tmp_path):
+    """[Phase A 钉子] 同 provider 两 key(K1, K2)→ Cascade.run() 被合规门卫阻断。
+
+    严格于 spec 场景("第 1 个请求用 A → 期望 OK,第 2 个请求用 B → 期望被拒"):
+    现有实现是 init-time 阻断,两 key 一旦注册,所有请求都被拒(更安全)。
+    本测试钉住这个**严格**行为,后续 Phase B 改成 per-request 检查时需另开新测试。
+    """
+    violating = PolicyEnforcer([
+        _entry("a", entity="openrouter", api_key_env="K1"),
+        _entry("b", entity="openrouter", api_key_env="K2"),
+    ])
+    pa = _CountingProvider("a")
+    pb = _CountingProvider("b")
+    store = TraceStore(tmp_path / "trace.db")
+    cascade = Cascade(
+        store,
+        CircuitBreaker(
+            db_path=tmp_path / "circuit.db",
+            key_hard_threshold=3,
+        ),
+        _FixedOrderStrategy(["a", "b"]),
+        [("a", pa, "K1"), ("b", pb, "K2")],
+        policy_enforcer=violating,
+    )
+
+    async def body():
+        try:
+            return await cascade.run("ping", correlation_id="CID-PHASE-A")
+        finally:
+            await store.close()
+
+    res = _run(body())
+    assert res.success is False
+    assert res.last_reason == "compliance_blocked"
+    assert res.hops_attempted == 0
+    assert pa.calls == 0 and pb.calls == 0, "Phase A 钉子:违规时 provider 必须零调用"
+
+
+def test_phase_a_violation_carries_provider_and_account_info():
+    """[Phase A 钉子] ComplianceViolation 必须含 provider(entity)和 account(api_key_env)。
+
+    对应 spec/phase-a-policy-test §错误信息含 provider 和 account。
+    """
+    enf = PolicyEnforcer([
+        _entry("alpha", entity="openai", api_key_env="K1"),
+        _entry("beta", entity="openai", api_key_env="K2"),
+    ])
+    assert enf.is_compliant() is False
+    assert len(enf.violations) == 1
+    v = enf.violations[0]
+    assert v.entity == "openai", "Phase A: violation.entity 必须是 provider 名"
+    assert "K1" in v.accounts and "K2" in v.accounts, "Phase A: violation.accounts 必须含两账号"
+    assert "alpha" in v.entries and "beta" in v.entries, "Phase A: violation.entries 必须含两 entry 名"
