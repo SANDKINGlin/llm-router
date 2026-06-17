@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .api.cascade import Cascade
 from .api.epsilon_greedy import EpsilonGreedy
+from .api.policy_enforcer import PolicyEnforcer
 from .config import policy
 from .health.probe import HealthProber
 from .providers.base import Provider
@@ -55,12 +56,17 @@ def _build_cascade() -> Cascade:
     # 真 provider 在前,mock 最后兜底(修 B1)。
     candidates: list = [*real_adapters, *mock_candidates]
 
+    # S2.7 合规门卫:候选 entries(含 mock)→ 别名归一化 + 同 provider 多账号检测。
+    # Phase1 mock-only(entity=mock,无 api_key_env)→ 合规 → 门卫放行;配了同实体多 key 才拦。
+    enforcer = PolicyEnforcer(entries.values())
+
     return Cascade(
         store=TraceStore(_DATA_DIR / "trace.db"),
         breaker=CircuitBreaker(_DATA_DIR / "circuit.db"),
         strategy=EpsilonGreedy(entries),
         candidates=candidates,
         health_store=HealthStore(_DATA_DIR / "health.db"),
+        policy_enforcer=enforcer,
     )
 
 

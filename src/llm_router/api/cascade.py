@@ -33,6 +33,7 @@ from ..routing.hop import (
     initial_attribution,
 )
 from ..store.trace import AcquireStatus, TraceStore
+from .policy_enforcer import ComplianceError, PolicyEnforcer
 from .strategy import RoutingStrategy
 
 _LOG = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class Cascade:
         candidates: list[tuple[str, Provider, str]],
         *,
         health_store: Optional[HealthStore] = None,
+        policy_enforcer: Optional[PolicyEnforcer] = None,
         budget: int = DEFAULT_RETRY_BUDGET,
     ) -> None:
         self._store = store
@@ -75,6 +77,7 @@ class Cascade:
         self._candidate_names: list[str] = [name for name, _p, _k in candidates]
         self._budget = budget
         self._health_store = health_store  # S2.8c:可选,路由前 hard-skip 死亡 key
+        self._policy_enforcer = policy_enforcer  # S2.7:可选,合规门(layer ①,最先)
         self._store_ready = False
         self._init_lock = asyncio.Lock()
 
@@ -142,7 +145,18 @@ class Cascade:
         幸存者才进 plan() 字典序排序(spec Req 4)。每跳:acquire trace → 幂等 replay 返缓存
         → breaker 判(CB 先于探活,Req 3a)→ provider.complete → ProviderError(HARD)/
         is_complete False(SOFT_CONTENT)/ 成功。budget 门拦第 7 跳。
+
+        最先:S2.7 合规门(layer ①)——配置非合规(同 provider 多账号)→ 拒绝路由,
+        不 init store、不 plan、不调 provider(check() 内已记合规日志)。
         """
+        if self._policy_enforcer is not None:
+            try:
+                self._policy_enforcer.check()
+            except ComplianceError:
+                _LOG.warning(
+                    "routing rejected by compliance gate (same-provider multi-account)"
+                )
+                return CascadeResult(None, None, False, 0, "compliance_blocked")
         await self._ensure_store()
         survivors = await self._surviving_candidates()
         if not survivors:

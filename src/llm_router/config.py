@@ -25,9 +25,17 @@ class ProviderEntry(BaseModel):
     model(S2.3 新增,Optional):真 provider 调用时指定的模型名(喂 OpenAIProvider.model)。
     D4 解锁:S2.1b 时 defer(无真 provider 用到);S2.3 接真 provider 入候选池时需要。
     mock / 未设 → None(adapter 用各自默认)。Phase2 Scanner 填真模型。
+
+    entity(S2.7 新增,Optional):provider 别名归一化的**canonical 实体**(compliance-gate spec Req 1)。
+    None → entity 默认 = name 自身(向后兼容:mock / 现有 yaml 无 entity,每个 name 自成一实体)。
+    空串("") 同 None,回退 name(显式写 `entity: ""` 等价未设)。
+    设了 entity 的 entry 是别名:多别名映射同一 entity(如 openrouter-gptoss/openrouter-qwen → openrouter)
+    = 同账号多模型/档位,**合规**;但同一 entity 下出现 ≥2 个不同 api_key_env = 同 provider 多账号薅羊毛,**违规**。
+    归一化表由 PolicyEnforcer 从 entries 派生(scanner/manifest 生成)。
     """
 
     name: str
+    entity: str | None = None
     tier: Literal["strong", "medium", "fast"]
     quota: int
     cooldown_s: int
