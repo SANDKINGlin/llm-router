@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .api.cascade import Cascade
+from .api.cost_gate import CostGate
 from .api.epsilon_greedy import EpsilonGreedy
 from .api.policy_enforcer import PolicyEnforcer
 from .config import policy
@@ -27,6 +28,7 @@ from .providers.mock import MockProvider
 from .resilience.circuit_breaker import CircuitBreaker
 from .scanner.mnfst import build_adapters, load_manifest
 from .store.health_store import HealthStore
+from .store.token_ledger import LedgerStore
 from .store.trace import TraceStore
 
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -60,6 +62,12 @@ def _build_cascade() -> Cascade:
     # Phase1 mock-only(entity=mock,无 api_key_env)→ 合规 → 门卫放行;配了同实体多 key 才拦。
     enforcer = PolicyEnforcer(entries.values())
 
+    # S2.4 Cost Budget Gate:共享 ledger(Cascade writer + CostGate reader 同一实例)+
+    # quotas 从 entries 取(ProviderEntry.quota,token 上限)。mock quota=1000000 → 永不超预算兜底。
+    ledger = LedgerStore(_DATA_DIR / "ledger.db")
+    quotas = {e.name: e.quota for e in entries.values()}
+    cost_gate = CostGate(ledger, quotas)
+
     return Cascade(
         store=TraceStore(_DATA_DIR / "trace.db"),
         breaker=CircuitBreaker(_DATA_DIR / "circuit.db"),
@@ -67,6 +75,8 @@ def _build_cascade() -> Cascade:
         candidates=candidates,
         health_store=HealthStore(_DATA_DIR / "health.db"),
         policy_enforcer=enforcer,
+        ledger=ledger,
+        cost_gate=cost_gate,
     )
 
 

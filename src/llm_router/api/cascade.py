@@ -21,10 +21,11 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ..providers.base import Provider, ProviderError
+from ..providers.base import Provider, ProviderError, Usage
 from ..resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReason
 from ..resilience.content_integrity import is_complete
 from ..store.health_store import HealthStore
+from ..store.token_ledger import LedgerStore
 from ..routing.hop import (
     DEFAULT_RETRY_BUDGET,
     advance,
@@ -33,6 +34,7 @@ from ..routing.hop import (
     initial_attribution,
 )
 from ..store.trace import AcquireStatus, TraceStore
+from .cost_gate import CostGate
 from .policy_enforcer import ComplianceError, PolicyEnforcer
 from .strategy import RoutingStrategy
 
@@ -65,6 +67,8 @@ class Cascade:
         *,
         health_store: Optional[HealthStore] = None,
         policy_enforcer: Optional[PolicyEnforcer] = None,
+        ledger: Optional[LedgerStore] = None,
+        cost_gate: Optional[CostGate] = None,
         budget: int = DEFAULT_RETRY_BUDGET,
     ) -> None:
         self._store = store
@@ -78,6 +82,8 @@ class Cascade:
         self._budget = budget
         self._health_store = health_store  # S2.8c:可选,路由前 hard-skip 死亡 key
         self._policy_enforcer = policy_enforcer  # S2.7:可选,合规门(layer ①,最先)
+        self._ledger = ledger  # S2.4:可选,token 用量记账(writer);与 cost_gate 共享实例
+        self._cost_gate = cost_gate  # S2.4:可选,路由前剔超 token 预算的候选(降级)
         self._store_ready = False
         self._init_lock = asyncio.Lock()
 
@@ -91,32 +97,72 @@ class Cascade:
 
         init 本身幂等(CREATE TABLE IF NOT EXISTS);无论 FastAPI lifespan 是否跑都安全
         (TestClient 模块级不触发 lifespan,lazy 兜底;真服务器首请求前完成 init)。
+        S2.4:同时 init ledger(若挂了)——writer(Cascade)+ reader(CostGate)共享同一实例。
         """
         if self._store_ready:
             return
         async with self._init_lock:
             if not self._store_ready:
                 await self._store.init()
+                if self._ledger is not None:
+                    await self._ledger.init()
                 self._store_ready = True
 
-    async def _surviving_candidates(self) -> list[str]:
-        """S2.8c Face 2 / spec Req 4:路由前 hard-skip health.db 中 alive=False 的 key。
+    async def _record_usage(
+        self, name: str, model: str, usage: Usage | None
+    ) -> None:
+        """S2.4:把 complete() 的 usage 落 token_ledger(best-effort)。
 
-        先于 strategy.plan() 字典序排序(只幸存者进排序池)。从未探活的 provider(不在 db)保留
-        (无信号=不过滤;spec 只剔 alive=False)。health 查询失败 → **fail-open** 返回全候选:
-        health 是非权威新鲜度信号,读不到不该崩请求(最坏多试一个死 key,由 CB/complete 失败兜底)。
+        usage=None(mock/未报)→ 跳过。ledger 写失败 → log warning 不崩请求
+        (cost 是软约束,记账失败不该阻断路由;同 health fail-open 理念)。
+        无论内容是否完整,token 已消耗,故在 is_complete 判定**前**记。
         """
-        if self._health_store is None:
-            return list(self._candidate_names)
+        if usage is None or self._ledger is None:
+            return
         try:
-            rows = await self._health_store.latest_probe(providers=self._candidate_names)
+            await self._ledger.record(
+                provider=name,
+                model=model,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cost=usage.cost,
+            )
         except Exception:
             _LOG.warning(
-                "health_store 查询失败 → fail-open 不过滤(非权威信号,不崩请求)", exc_info=True
+                "token_ledger 记账失败(provider=%s)→ 跳过(软约束,不崩请求)",
+                name,
+                exc_info=True,
             )
-            return list(self._candidate_names)
-        dead = {r.provider for r in rows if not r.alive}
-        return [n for n in self._candidate_names if n not in dead]
+
+    async def _surviving_candidates(self) -> list[str]:
+        """路由前候选过滤(全部 fail-open,非权威信号不崩请求):
+
+        - S2.8c health:hard-skip health.db 中 alive=False 的 key(从未探活保留=无信号不过滤)。
+        - S2.4 cost:剔超 token 预算的 provider(降级到剩余免费/mock 兜底)。
+
+        两过滤均先于 strategy.plan() 字典序排序(只幸存者进排序池)。任一查询失败 → fail-open
+        返全候选(health/cost 都是非权威软信号,读不到不该崩请求)。
+        """
+        if self._health_store is None:
+            survivors = list(self._candidate_names)
+        else:
+            try:
+                rows = await self._health_store.latest_probe(
+                    providers=self._candidate_names
+                )
+            except Exception:
+                _LOG.warning(
+                    "health_store 查询失败 → fail-open 不过滤(非权威信号,不崩请求)",
+                    exc_info=True,
+                )
+                survivors = list(self._candidate_names)
+            else:
+                dead = {r.provider for r in rows if not r.alive}
+                survivors = [n for n in self._candidate_names if n not in dead]
+        # S2.4 cost gate:超预算剔出(fail-open,见 CostGate.survivors)。
+        if self._cost_gate is not None:
+            survivors = await self._cost_gate.survivors(survivors)
+        return survivors
 
     def feed_probe_success(self, name: str) -> None:
         """S2.8c Face 3 / spec Req 3b:探活成功喂 HALF_OPEN 加速恢复。
@@ -228,8 +274,9 @@ class Cascade:
                 continue
 
             # ⑥ 放行 → 调 provider(真 HTTP 经 adapter)。ProviderError → HARD。
+            #   S2.4:complete 返 3-tuple(text, model, usage)。
             try:
-                text, model = await provider.complete(prompt)
+                text, model, usage = await provider.complete(prompt)
             except ProviderError:
                 self._breaker.record_failure(name, key, TripReason.HARD)
                 await self._store.commit(
@@ -242,6 +289,9 @@ class Cascade:
                 parent_trace_id = out.trace_id
                 continue
             # 非 ProviderError(编程 bug)上抛不吞——不 trip 熔断、不掩盖(design 点2 DEFEND)。
+
+            # ⑥.5 S2.4:token 用量记账(best-effort)。token 已消耗,先于完整性判定记。
+            await self._record_usage(name, model, usage)
 
             # ⑦ 内容完整性:残缺 → 软失败(3 软 = 1 硬)。
             if not is_complete(text, model):

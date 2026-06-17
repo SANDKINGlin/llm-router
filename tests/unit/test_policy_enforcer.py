@@ -298,9 +298,9 @@ class _CountingProvider(Provider):
         self.name = name
         self.calls = 0
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
+    async def complete(self, prompt: str) -> tuple[str, str, None]:
         self.calls += 1
-        return f"from-{self.name}", f"m-{self.name}"
+        return f"from-{self.name}", f"m-{self.name}", None
 
 
 class _FixedOrderStrategy(RoutingStrategy):

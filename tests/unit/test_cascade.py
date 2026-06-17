@@ -56,8 +56,8 @@ class _FakeProvider(Provider):
         if self._raises is not None:
             raise self._raises
         if self._incomplete:
-            return "", self._model
-        return self._text, self._model
+            return "", self._model, None
+        return self._text, self._model, None
 
 
 class _FixedOrderStrategy(RoutingStrategy):

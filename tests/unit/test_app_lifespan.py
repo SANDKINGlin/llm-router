@@ -34,7 +34,7 @@ class _OKProvider(Provider):
     name = "ok"
 
     async def complete(self, prompt):
-        return "pong", "ok-model"
+        return "pong", "ok-model", None
 
 
 class _BoomProvider(Provider):

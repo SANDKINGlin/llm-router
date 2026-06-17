@@ -3,6 +3,11 @@
 仅用于在 trace store + circuit breaker 组件层验证 hop 语义与 total_retry_budget 契约,
 **不接入 app.py**(那是 S2.1 Cascade 的职责)。它串起已存在的生产组件:
 
+⚠️ **S2.4 契约不同步**:生产 `Provider.complete()` 已改 3-tuple `(text, model, Usage|None)`,
+但本 helper 的 `complete_fn` 闭包仍返 2-tuple `(text, model)`(自洽——orchestrator 只解包 2 元,
+不调真 Provider.complete())。**勿将本 helper 外接真 Provider 子类**(签名不匹配);它是 sealed
+测试工件,S2.1 后已标注待删。
+
     allow_request → provider_fn → is_complete → record_success/failure
         → acquire/commit(带 hop 归因)→ check_hop_budget → 下一 hop
 

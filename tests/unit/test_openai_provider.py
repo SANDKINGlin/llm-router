@@ -16,7 +16,7 @@ import httpx
 import pytest
 import respx
 
-from llm_router.providers.base import ProviderError
+from llm_router.providers.base import ProviderError, Usage
 from llm_router.providers.openai import OpenAIProvider
 
 _BASE = "https://test.openai.invalid/v1"
@@ -44,11 +44,23 @@ def _provider(model="test-model"):
 
 @respx.mock
 def test_success_returns_text_and_model():
-    """200 + 合法 chat completion → adapter 返 (content, model)。"""
+    """200 + 合法 chat completion → adapter 返 (content, model, usage);usage 取自 resp.usage。"""
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_OK_BODY))
-    text, model = _run(_provider().complete("hello"))
+    text, model, usage = _run(_provider().complete("hello"))
     assert text == "hello-back"
     assert model == "test-model"
+    assert usage == Usage(prompt_tokens=1, completion_tokens=1)
+    assert usage.total_tokens == 2
+
+
+@respx.mock
+def test_success_without_usage_returns_none():
+    """响应无 usage 字段(部分 OpenRouter 模型不返)→ usage=None(fail-open,跳过记账)。"""
+    body = {k: v for k, v in _OK_BODY.items() if k != "usage"}
+    respx.post(_URL).mock(return_value=httpx.Response(200, json=body))
+    text, model, usage = _run(_provider().complete("hello"))
+    assert text == "hello-back"
+    assert usage is None
 
 
 @respx.mock

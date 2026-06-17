@@ -14,15 +14,16 @@ from __future__ import annotations
 
 import openai
 
-from .base import Provider, ProviderError
+from .base import Provider, ProviderError, Usage
 
 
 class OpenAIProvider(Provider):
     """OpenAI Chat Completions adapter(async)。
 
-    Phase1:仅 complete(prompt)->(text, model);SDK 异常全归 ProviderError(HARD)。
-    TODO(S2.x):细分 RateLimit(立即可重试)/Transient(5xx·超时)/Permanent(不可恢复);
-                流式;真 token 计量(token_ledger)。
+    Phase1:complete(prompt)->(text, model, usage);SDK 异常全归 ProviderError(HARD)。
+    S2.4:提取 resp.usage → Usage(token_ledger 记账 + CostGate 超预算过滤)。部分 provider
+    (如某些 OpenRouter 模型)不返 usage → Usage=None(Cascade 跳过记账,fail-open)。
+    TODO(S2.x):细分 RateLimit(立即可重试)/Transient(5xx·超时)/Permanent(不可恢复);流式。
     """
 
     def __init__(
@@ -41,7 +42,7 @@ class OpenAIProvider(Provider):
             max_retries=0,  # 关 SDK 内部重试,重试归 Cascade+breaker(防双重重试)
         )
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
+    async def complete(self, prompt: str) -> tuple[str, str, Usage | None]:
         try:
             resp = await self._client.chat.completions.create(
                 model=self.model,
@@ -53,4 +54,16 @@ class OpenAIProvider(Provider):
                 f"{self.name}: openai 调用失败 ({type(exc).__name__}): {exc}"
             ) from exc
         content = resp.choices[0].message.content or ""
-        return content, resp.model
+        usage = self._extract_usage(resp)
+        return content, resp.model, usage
+
+    @staticmethod
+    def _extract_usage(resp) -> Usage | None:
+        """从 SDK 响应提取 Usage;无 usage 字段(部分 provider 不返)→ None。"""
+        u = getattr(resp, "usage", None)
+        if u is None:
+            return None
+        prompt = getattr(u, "prompt_tokens", 0) or 0
+        completion = getattr(u, "completion_tokens", 0) or 0
+        # total 缺失时回退 prompt+completion(个别 provider 只给部分字段)。
+        return Usage(prompt_tokens=prompt, completion_tokens=completion)

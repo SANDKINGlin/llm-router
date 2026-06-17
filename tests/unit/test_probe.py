@@ -24,22 +24,22 @@ from llm_router.store.health_store import HealthStore
 class _OKProvider(Provider):
     name = "ok"
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
-        return "pong", "ok-model"
+    async def complete(self, prompt: str) -> tuple[str, str, None]:
+        return "pong", "ok-model", None
 
 
 class _SlowProvider(Provider):
     name = "slow"
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
+    async def complete(self, prompt: str) -> tuple[str, str, None]:
         await asyncio.sleep(10)  # 远超 probe_timeout
-        return "x", "y"
+        return "x", "y", None
 
 
 class _ProviderErrorProvider(Provider):
     name = "boom"
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
+    async def complete(self, prompt: str) -> tuple[str, str, None]:
         raise ProviderError("simulated 5xx")
 
 
@@ -48,7 +48,7 @@ class _BugProvider(Provider):
 
     name = "bug"
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
+    async def complete(self, prompt: str) -> tuple[str, str, None]:
         raise RuntimeError("unexpected")
 
 
@@ -167,9 +167,9 @@ def test_run_loop_runs_until_stop_event(tmp_path):
             class _Count(Provider):
                 name = "c"
 
-                async def complete(self, prompt: str) -> tuple[str, str]:
+                async def complete(self, prompt: str) -> tuple[str, str, None]:
                     calls.append(1)
-                    return "x", "m"
+                    return "x", "m", None
 
             prober = HealthProber(
                 store, [("c", _Count())], interval_seconds=0.01, probe_timeout_seconds=1.0

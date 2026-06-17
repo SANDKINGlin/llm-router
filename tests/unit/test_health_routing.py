@@ -55,7 +55,7 @@ class _FakeProvider(Provider):
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         if self._raises is not None:
             raise self._raises
-        return self._text, self._model
+        return self._text, self._model, None
 
 
 class _FixedOrderStrategy(RoutingStrategy):

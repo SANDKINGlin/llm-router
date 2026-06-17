@@ -5,7 +5,7 @@ S2.x 接真 provider 后,路由层优先选真 provider,mock 仅测试用。
 """
 from __future__ import annotations
 
-from .base import Provider
+from .base import Provider, Usage
 
 _CANNED = "[mock] llm-router skeleton OK — canned response, not a real model."
 
@@ -13,5 +13,6 @@ _CANNED = "[mock] llm-router skeleton OK — canned response, not a real model."
 class MockProvider(Provider):
     name = "mock"
 
-    async def complete(self, prompt: str) -> tuple[str, str]:
-        return _CANNED, "mock-skeleton"
+    async def complete(self, prompt: str) -> tuple[str, str, Usage | None]:
+        # mock 不消耗真 token → usage=None(Cascade 跳过 token_ledger 记账)。
+        return _CANNED, "mock-skeleton", None
