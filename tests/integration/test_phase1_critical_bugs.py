@@ -190,6 +190,25 @@ def test_bug_fr01_budget_exhausts_at_seventh_in_full_stack(tmp_path, monkeypatch
     assert all(calls.get(n) == 1 for n in names[:6]), (
         f"BUG-FR-01:前 6 个应各调一次,实际 {calls}"
     )
+    # OpenCode MED #6 闭合:验证前 6 跳的 hop_attribution 单调正确(防假绿:
+    # 若 advance() 被改成始终返 initial,calls 计数+末跳断言仍绿,但归因错乱抓不到)。
+    # 首跳 depth=0 reason=initial from=None to=names[0];后续 depth=i reason=hard_failure
+    # from=names[i-1] to=names[i]——每跳真调真挂,链单调推进。
+    h0 = parse_attribution(chain[0].hop_attribution)
+    assert h0.depth == 0 and h0.reason == "initial"
+    assert h0.from_provider is None and h0.to_provider == names[0]
+    for i in range(1, 6):
+        hi = parse_attribution(chain[i].hop_attribution)
+        assert hi.depth == i, f"BUG-FR-01:第 {i} 跳 depth 应 {i},实际 {hi.depth}"
+        assert hi.reason == "hard_failure", (
+            f"BUG-FR-01:第 {i} 跳 reason 应 hard_failure,实际 {hi.reason}"
+        )
+        assert hi.from_provider == names[i - 1], (
+            f"BUG-FR-01:第 {i} 跳 from 应 {names[i - 1]},实际 {hi.from_provider}"
+        )
+        assert hi.to_provider == names[i], (
+            f"BUG-FR-01:第 {i} 跳 to 应 {names[i]},实际 {hi.to_provider}"
+        )
 
 
 # ── BUG-FR-02:嵌套 fallback hop 语义未定义 ──────────────────────────────────
