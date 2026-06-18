@@ -64,6 +64,14 @@ class EpsilonGreedy(RoutingStrategy):
         self._matcher: TierMatcher = matcher or TierMatcher()
         self._requests = 0  # 内存计数器(重启 reset)
 
+    def refresh_entries(self, entries: dict) -> None:
+        """S4.3:apply_policy 同步更新排序键字典(防 stale 排序)。
+
+        ponytail:仅替换 _entries,不动 _eps_*/_requests(运行时状态由 D7 决定是否保留,
+        本切片保守只换数据)。
+        """
+        self._entries = entries
+
     def _epsilon(self) -> float:
         """当前 ε = max(下限, 起步 × 衰减因子^(请求//周期))。"""
         eps = self._eps_start * (self._decay_factor ** (self._requests // self._decay_every))

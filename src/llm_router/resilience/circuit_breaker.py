@@ -341,3 +341,69 @@ class CircuitBreaker:
             )
             return GlobalState(state=CircuitState.OPEN, opened_at=opened)
         return GlobalState(state=CircuitState.CLOSED)
+
+    # ---------- S4.3 rollback (回滚状态同步核心原语) ----------
+
+    def rollback(self, active_keys: set[tuple[str, str]]) -> None:
+        """S4.3:policy_version 回滚时把 CB 状态重新对齐到新版本。
+
+        行为(单事务,见 OpenCode 节点 1 review §采纳):
+          1. **active_keys 之外**的 key(幽灵,旧版本有但新版本无)→ 从 db + 内存删
+          2. **active_keys 之内**的 key → 若是 OPEN/HALF_OPEN,重置为 CLOSED 全新起点
+             (清 hard_failures / soft_failures / half_open_failures / opened_at /
+             next_probe_at / probe_in_flight);CLOSED 保持不变
+          3. **入口 assertion**:active_keys 必须是当前已知的 (provider, key) 子集
+             (防调用方算错 active_keys 集合 → 删错/留幽灵;fail-fast)
+
+        Args:
+            active_keys: rollback **之后**仍存在的 (provider, key) 集合;不在此集合
+                         的 key 视为幽灵(旧版本残留),删除。
+
+        ponytail:global lock not held — rollback 是同步单事务,db 单连接串行;
+        in-flight record_failure 自然排队,无 race。cascade.run 端的 KeyError 保护
+        另在 cascade.py 处理(apply_policy 替换 _providers 的瞬间)。
+        """
+        # 入口 well-formedness check(防 caller 传 None/空 tuple;不守"subset of known"
+        # — apply_policy 切版本时新 key 不在 CB known 集合里是常态,不是错)。
+        # 真正的"防算错"在 cascade.apply_policy(从 candidates 机械派生)+ 端点
+        # gray_percent guard + e2e 测试覆盖,不在此层。
+        for pk in active_keys:
+            assert (
+                isinstance(pk, tuple) and len(pk) == 2
+                and all(isinstance(x, str) and x for x in pk)
+            ), f"rollback: active_keys 含非法 entry {pk!r} — 应为 (provider, key) 双字符串 tuple"
+
+        with sqlite3.connect(self.db_path) as conn:
+            # 1. 删 db 里 active_keys 之外的(幽灵)
+            if self._keys:
+                # 已知所有 key → 算 ghost = known - active
+                ghosts = [pk for pk in self._keys if pk not in active_keys]
+                for provider, key in ghosts:
+                    conn.execute(
+                        "DELETE FROM circuit_keys WHERE provider=? AND key=?",
+                        (provider, key),
+                    )
+                    self._keys.pop((provider, key), None)
+
+            # 2. active 之内的 OPEN/HALF_OPEN → reset 到 CLOSED 全新起点
+            for provider, key in active_keys:
+                ks = self._keys.get((provider, key))
+                if ks is None:
+                    continue  # active 里但内存里没有(理论上不可能,因 assertion)
+                if ks.state == CircuitState.CLOSED:
+                    # CLOSED 不动(保留连续失败计数;rollback 只清 cooldown 不清 success 计数)
+                    continue
+                # OPEN / HALF_OPEN → 全字段重置
+                ks.state = CircuitState.CLOSED
+                ks.hard_failures = 0
+                ks.soft_failures = 0
+                ks.half_open_failures = 0
+                ks.opened_at = None
+                ks.next_probe_at = None
+                ks.probe_in_flight = False
+                conn.execute(
+                    """UPDATE circuit_keys SET state=?, hard_failures=0, soft_failures=0,
+                       half_open_failures=0, opened_at=NULL, next_probe_at=NULL,
+                       probe_in_flight=0 WHERE provider=? AND key=?""",
+                    (ks.state.value, provider, key),
+                )

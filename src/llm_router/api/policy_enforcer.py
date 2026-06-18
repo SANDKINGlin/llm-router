@@ -69,27 +69,35 @@ class PolicyEnforcer:
     """
 
     def __init__(self, entries: Iterable[ProviderEntry]) -> None:
-        self._alias_table: dict[str, str] = {}
-        # entity -> {api_key_env -> {entry names}};只收有账号 key 的 entry。
-        per_entity: dict[str, dict[str, set[str]]] = defaultdict(
-            lambda: defaultdict(set)
-        )
-        for e in entries:
-            entity = e.entity or e.name  # 归一化:无 entity → name 自身
-            self._alias_table[e.name] = entity
-            if e.api_key_env:  # 有账号 key 才参与多账号检测
-                per_entity[entity][e.api_key_env].add(e.name)
+        # 共享初始化路径:__init__ 和 S4.3 rebuild() 都走 __init_rebuild(防逻辑分叉)。
+        self.__init_rebuild(entries)
+        self._logged = False
 
-        self._violations: tuple[ComplianceViolation, ...] = tuple(
+    def rebuild(self, entries: "Iterable[ProviderEntry]") -> None:
+        """S4.3:apply_policy 重建别名表 + 违规表(防 entity 映射 stale)。
+
+        ponytail:重跑 __init__ 同款逻辑;不引新路径——统一用 __init__ 入口的
+        __init_rebuild 私有方法(下面抽出来);对外只露 rebuild。
+        """
+        self.__init_rebuild(entries)
+
+    def __init_rebuild(self, entries: "Iterable[ProviderEntry]") -> None:
+        self._alias_table = {}
+        per_entity: dict = defaultdict(lambda: defaultdict(set))
+        for e in entries:
+            entity = e.entity or e.name
+            self._alias_table[e.name] = entity
+            if e.api_key_env:
+                per_entity[entity][e.api_key_env].add(e.name)
+        self._violations = tuple(
             ComplianceViolation(
                 entity=entity,
                 accounts=tuple(sorted(accounts.keys())),
                 entries=tuple(sorted(n for names in accounts.values() for n in names)),
             )
             for entity, accounts in sorted(per_entity.items())
-            if len(accounts) >= 2  # 同 entity ≥2 个不同账号 = 违规
+            if len(accounts) >= 2
         )
-        self._logged = False
 
     @property
     def alias_table(self) -> dict[str, str]:

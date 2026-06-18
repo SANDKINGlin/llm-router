@@ -31,6 +31,14 @@ class CostGate:
         self._ledger = ledger
         self._quotas = dict(quotas)
 
+    def update_quotas(self, quotas: dict[str, int]) -> None:
+        """S4.3:apply_policy 同步更新配额表(防 stale 过/漏 gate)。
+
+        ponytail:无锁——readers(survivors/is_over_budget)从 self._quotas 读单字段,
+        dict 替换非原子但 GIL 守单赋值可见性;并发请求读旧值不致命(只多/少判一次预算)。
+        """
+        self._quotas = dict(quotas)
+
     @property
     def quotas(self) -> dict[str, int]:
         """name -> quota 配置(只读副本,供诊断)。"""

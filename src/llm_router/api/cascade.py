@@ -88,6 +88,9 @@ class Cascade:
         self._cost_gate = cost_gate  # S2.4:可选,路由前剔超 token 预算的候选(降级)
         self._store_ready = False
         self._init_lock = asyncio.Lock()
+        # S4.3:回滚状态同步。当前 policy_version(由 /admin/rollback 端点设);
+        # apply_policy 收到同 version 直接 noop,版本变化才触发 breaker.rollback + 候选替换。
+        self._policy_version: str = ""
 
     @property
     def health_store(self) -> Optional[HealthStore]:
@@ -180,6 +183,39 @@ class Cascade:
         ks = self._breaker.get_key_state(name, key)
         if ks.state == CircuitState.HALF_OPEN:
             self._breaker.record_success(name, key)
+
+    def apply_policy(
+        self,
+        candidates: list[tuple],
+        policy_version: str,
+    ) -> bool:
+        """S4.3:policy_version 变化时把 CB/Cascade 状态对齐到新版本。
+
+        行为(单事务视角——db 同步,内存单赋值,详见 design.md §S4.3):
+          1. active_keys = {(provider, key) for _, provider, key in candidates}
+          2. breaker.rollback(active_keys):删幽灵 + 重置 OPEN/HALF_OPEN
+          3. 原子替换 _providers / _candidate_names(单语句赋值,GIL 内可见)
+          4. 更新 _policy_version
+
+        Args:
+            candidates: 新版本下的 (name, Provider, key) 列表
+            policy_version: 新版本号(必须 != 当前 version 才生效;否则 noop)
+
+        Returns:
+            True = 已应用(版本变化);False = noop(版本相同)
+
+        ponytail:不负责同步 strategy / cost_gate / policy_enforcer 内部状态——app 层
+        /admin/rollback 端点先调对应的 refresh_*/update_*/rebuild(防职责蔓延),本方法只管
+        CB + candidate 集合。
+        """
+        if policy_version == self._policy_version:
+            return False  # 同版本,no-op
+        active_keys = {(name, key) for name, _prov, key in candidates}  # name 即 CB 用的 provider 标识
+        self._breaker.rollback(active_keys)
+        self._providers = {name: (prov, key) for name, prov, key in candidates}
+        self._candidate_names = [name for name, _p, _k in candidates]
+        self._policy_version = policy_version
+        return True
 
     async def run(
         self,
@@ -282,7 +318,24 @@ class Cascade:
 
             attempted += 1
 
-            provider, key = self._providers[name]
+            # S4.3:KeyError 兜底(OpenCode CRITICAL)。apply_policy 在 await 间隙换了
+            # _providers 后,chain 中的 name 可能已不在新 dict;非崩溃,记归因 + 继续。
+            try:
+                provider, key = self._providers[name]
+            except KeyError:
+                _LOG.warning(
+                    "provider_removed_during_rollback: name=%s policy_version=%s",
+                    name, self._policy_version,
+                )
+                await self._store.commit(
+                    trace_id=out.trace_id,
+                    result="",
+                    hop_attribution=attr.to_json(),
+                )
+                last_reason = "provider_removed_during_rollback"
+                prev_provider = name
+                parent_trace_id = out.trace_id
+                continue
 
             # ⑤ breaker 判定:拒 → 记归因(本跳),记 reason 给下一跳,continue。
             dec = self._breaker.allow_request(name, key)

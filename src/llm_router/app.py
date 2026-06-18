@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -247,4 +247,74 @@ async def anthropic_messages(req: _AnthropicRequest, request: Request) -> dict:
         "content": [{"type": "text", "text": result.final_text or ""}],
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+
+
+
+# ── S4.3 · 应急回滚端点 ─────────────────────────────────────────────────────
+
+
+class _RollbackRequest(BaseModel):
+    """S4.3:/admin/rollback body。policy_version 必须 == policy().policy_version(灰度一致 guard)。
+
+    字段含义:操作方已 revert policy.yaml 到目标版本;端点收到后比 body 的 version 与
+    当前 policy().policy_version,一致才执行(防"操作方以为回了但 yaml 还没生效"的隐式不一致)。
+    """
+
+    policy_version: str = Field(..., description="回滚目标版本号(必须 == 当前 policy().policy_version)")
+
+
+def _admin_guard() -> None:
+    """S4.3 占位鉴权(D7 TODO:真 admin token / RBAC)。fail-closed:任何调用一律 403。
+
+    OpenCode 节点 1 [HIGH] 决策:不留空 body,直接把端点锁住,防团队忘记加鉴权就让
+    /admin/rollback 上线(D7 才会替换此 guard)。
+    """
+    raise HTTPException(
+        status_code=403,
+        detail="admin endpoint disabled (D7 TODO: real auth — token/RBAC)",
+    )
+
+
+@app.post("/admin/rollback")
+def admin_rollback(req: _RollbackRequest, _admin: None = Depends(_admin_guard)) -> dict:
+    """S4.3:policy 回滚状态同步端点。需 admin 鉴权(D7 TODO)。
+
+    流程(应用层编排,职责分离——cascade 只管 CB+candidate,strategy/cost_gate/enforcer
+    各自 refresh):
+      1. 鉴权:_admin_guard 直接 403(fail-closed 占位)
+      2. 灰度一致 guard:body.policy_version 必须 == policy().policy_version
+      3. 重新读 manifest + policy → 构造新 candidates 与 entries 字典
+      4. 同步刷新 strategy.refresh_entries / cost_gate.update_quotas / enforcer.rebuild
+      5. cascade.apply_policy(new_candidates, policy_version)
+
+    Returns:
+        {"applied": bool, "policy_version": str, "candidates": list[str]}
+    """
+    # ② 灰度一致 guard(OpenCode 节点 1 [MED])
+    pol = policy()
+    if req.policy_version != pol.policy_version:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"policy_version mismatch: body={req.policy_version} "
+                f"policy()={pol.policy_version} (revert policy.yaml 后再调)"
+            ),
+        )
+    # ③ 重新构造候选
+    manifest_entries = load_manifest()
+    entries = {e.name: e for e in (*pol.providers, *manifest_entries)}
+    real_adapters = build_adapters(manifest_entries)
+    mock_candidates = [(e.name, MockProvider(), e.name) for e in pol.providers]
+    candidates: list = [*real_adapters, *mock_candidates]
+    # ④ 同步刷新 strategy / cost_gate / enforcer(职责分离:各组件自己 refresh)
+    _cascade._strategy.refresh_entries(entries)  # type: ignore[union-attr]
+    _cascade._cost_gate.update_quotas({e.name: e.quota for e in entries.values()})  # type: ignore[union-attr]
+    _cascade._policy_enforcer.rebuild(entries.values())  # type: ignore[union-attr]
+    # ⑤ cascade apply(只管 CB + candidate 集合)
+    applied = _cascade.apply_policy(candidates, req.policy_version)
+    return {
+        "applied": applied,
+        "policy_version": req.policy_version,
+        "candidates": [n for n, _p, _k in candidates],
     }
