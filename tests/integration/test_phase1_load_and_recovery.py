@@ -191,9 +191,15 @@ def test_burst_all_providers_returns_global_open_finite(tmp_path):
     个请求开始 derived global OPEN(全部 _keys 中 provider 都 OPEN)→ 所有跳被
     global_open 拒,cascade 在 chain 长度内有限循环退出(非死循环)。
 
-    防"无限重试雪崩"验证:30 个请求总耗时 < 1s(若死循环会 timeout);每请求 cascade
-    返 success=False reason=global_open;无 provider.complete 调用次数超过 hf 阈值。
+    防"无限重试雪崩"验证:
+      - 30 个请求总耗时 < 5s(OpenCode 子片4 MED #3 闭合:加耗时断言而非仅 docstring)
+      - 每请求 cascade 返 success=False reason=global_open
+      - 每 provider 真调用 == 3(OpenCode 子片4 MED #2 闭合:精确值非魔数 5,
+        前 3 次 cascade.run 各让 bad1/bad2 fail 1 次累积到 threshold;之后 derived
+        global_open 短路,真 complete 不再调)
     """
+    import time as _time
+
     counter: dict[str, int] = {}
     candidates = [
         ("bad1", _StubHardFail("bad1", counter=counter), "k1"),
@@ -213,20 +219,35 @@ def test_burst_all_providers_returns_global_open_finite(tmp_path):
         finally:
             await cascade._health_store.close()
 
+    elapsed_start = _time.monotonic()
     results = _run(body())
+    elapsed = _time.monotonic() - elapsed_start
+
+    # OpenCode 子片4 MED #3 闭合:30 请求 5s 内完成(若死循环 / asyncio.sleep 注入
+    # 雪崩,本断言立败)
+    assert elapsed < 5.0, (
+        f"30 个 burst 请求耗时 {elapsed:.2f}s 超 5s,疑似死循环 / 同步阻塞雪崩"
+    )
+
     # 全部 30 个请求 success=False(无 provider 兜底)
     for r in results:
         assert r.success is False
     # 后期请求 reason="global_open"(派生 global 触发后)
-    # 前 6 跳左右是真调,之后是 global_open 短路
     last = results[-1]
     assert last.last_reason == "global_open", (
         f"全 burst 后 last_reason 应 global_open,实际 {last.last_reason}"
     )
-    # 防雪崩:每 provider 的真调用次数应远小于 30 × N_provider(实际仅前几个请求累积到 OPEN)
-    # bad1 + bad2 各最多 3 次(threshold)+ 之后是 hard-skip
-    assert counter.get("bad1", 0) <= 5, f"bad1 真调用过多,雪崩疑似:{counter}"
-    assert counter.get("bad2", 0) <= 5, f"bad2 真调用过多,雪崩疑似:{counter}"
+    # OpenCode 子片4 MED #2 闭合:精确断言各 provider 真调用 == 3(threshold)
+    # 前 3 次 cascade.run:bad1/bad2 各被尝试 1 次累积 → r3 内 bad1 hf=3 OPEN,
+    # bad2 hf=3 OPEN(record_failure 在 complete 后,r3 内两 provider 都被尝试)。
+    # r4 起:bad1 allow → _global_is_open=True(只两 provider 全 OPEN)→ 短路,无
+    # complete 调用。
+    assert counter.get("bad1") == 3, (
+        f"防雪崩:bad1 真调用应 == 3(threshold),实际 {counter.get('bad1')}"
+    )
+    assert counter.get("bad2") == 3, (
+        f"防雪崩:bad2 真调用应 == 3(threshold),实际 {counter.get('bad2')}"
+    )
 
 
 # ── A2 HALF_OPEN 探活恢复路径(子片 3 OpenCode MED #5 defer 收口) ─────────
@@ -315,6 +336,39 @@ def test_breaker_half_open_probe_failure_extends_window(tmp_path):
     assert ks.next_probe_at == pytest.approx(31.0 + 60.0)  # 翻倍到 60
 
 
+def test_breaker_half_open_busy_blocks_concurrent_probe(tmp_path):
+    """A2.4 OpenCode 子片4 MED #4 闭合:HALF_OPEN 状态下并发探测互斥。
+
+    场景:OPEN → cooldown 后第 1 次 allow → HALF_OPEN + probe_in_flight=True;
+    第 2 次 allow(同 key)→ Decision(False, "half_open_busy")。验证 probe_in_flight
+    防并发惊群机制有效(若删此分支,多个并发请求同时进 HALF_OPEN,状态机一致性破坏)。
+
+    反例闭合:删 `if ks.probe_in_flight: return Decision(False, "half_open_busy")`,
+    第 2 次 allow 也会进 HALF_OPEN 并设 probe_in_flight=True(已是 True),仍返
+    `Decision(True, "key_half_open_probe")` → 本测立败抓住。
+    """
+    breaker = _make_test_breaker(tmp_path)
+    for _ in range(3):
+        breaker.record_failure("p", "k", TripReason.HARD)
+    assert breaker.get_key_state("p", "k").state == CircuitState.OPEN
+
+    # 推进 cooldown,第 1 次 allow → 进 HALF_OPEN,放探测
+    breaker._now_override = 31.0
+    dec1 = breaker.allow_request("p", "k")
+    assert dec1.allowed is True
+    assert dec1.reason == "key_half_open_probe"
+    assert breaker.get_key_state("p", "k").probe_in_flight is True
+
+    # 第 2 次 allow(同 key,模拟并发探测)→ probe_in_flight=True 被互斥,拒
+    dec2 = breaker.allow_request("p", "k")
+    assert dec2.allowed is False, (
+        "HALF_OPEN + probe_in_flight=True 应互斥拒新探测,防并发惊群"
+    )
+    assert dec2.reason == "half_open_busy", (
+        f"应 reason='half_open_busy';实际 {dec2.reason!r}"
+    )
+
+
 def test_cascade_routes_through_half_open_probe_recovers(tmp_path):
     """A2.3 cascade 集成:provider 突发失败 → OPEN → cooldown 后 cascade.run 探测
     成功 → 走该 provider(原值返回)。
@@ -366,9 +420,11 @@ def test_cascade_routes_through_half_open_probe_recovers(tmp_path):
 def _data_dir_mtime_snapshot() -> dict[str, float]:
     """快照 production data/*.db 的 mtime(防 lifespan 真启时静默写入)。
 
-    返 {basename: mtime};文件不存在则不入字典。
+    返 {basename: mtime};文件不存在则不入字典。OpenCode 子片4 CRITICAL #1 闭合:
+    路径用 `Path(__file__).resolve().parents[2] / "data"`(与 app.py:_DATA_DIR 一致),
+    不硬编码用户路径,避免 CI / 跨开发机假绿。
     """
-    data_dir = Path("/home/lin/projects/llm-router/data")
+    data_dir = Path(__file__).resolve().parents[2] / "data"
     snap: dict[str, float] = {}
     for f in data_dir.glob("*.db"):
         snap[f.name] = f.stat().st_mtime
@@ -405,28 +461,27 @@ def test_lifespan_with_with_block_starts_and_stops_cleanly(tmp_path, monkeypatch
     assert counter == {"p": 1}
 
 
-def test_lifespan_with_no_probe_targets_does_not_pollute_production_data(
+def test_lifespan_with_no_probe_targets_only_pollutes_health_db_via_init(
     tmp_path, monkeypatch
 ):
-    """A3.2 OpenCode 子片 2 HIGH #1 闭合:lifespan 真启 + 无 probe_targets(production
-    无真 key 默认场景)→ 不起后台探活 task,health_store init/close 不污染 production
-    `data/*.db`(mtime 不变)。
+    """A3.2 OpenCode 子片 2 HIGH #1 + 子片 4 HIGH #1 闭合:lifespan 真启 + 无
+    probe_targets(production 默认)→ **仅 health.db 因 schema init 可能有 mtime 变化**;
+    其他 db(trace / ledger / circuit)**绝对不变**——这是当前 lifespan 工厂闭包绑定
+    原始 _cascade 的真实污染范围(架构 caveat,非测试假绿)。
 
-    监测策略:
-      - snapshot mtime BEFORE `with TestClient(app):`
-      - `with` 块进入触发 lifespan startup
-      - 跑 1 个请求(cascade 用 patched isolated cascade,写 tmp_path)
-      - 退出 with 块触发 lifespan shutdown
-      - snapshot mtime AFTER → 应**全等**(无 production data 写入)
+    **测试名诚实化**(子片 4 OpenCode HIGH #1 反驳):原名 "does_not_pollute" 是误导
+    (lifespan 闭包绑定 production cascade,health.db 实际**会被污染**——init 跑就建表/
+    更新文件)。改成 "only_pollutes_health_db_via_init" 显示当前真实状态,精确监测
+    其他 3 个 db。
 
-    防 hypothetical 反例(OpenCode HIGH #1):若 starlette 改成强制触发 lifespan,
-    且 _make_lifespan 闭包还指向**原始 production cascade**(模块级初始化时绑定),
-    则 lifespan 会 init/close production health.db,mtime 变化 → 本测立败抓住污染。
+    架构闭合路径(Phase 2 决策):若想真"零污染",需重构 _make_lifespan 为可注入 cascade。
+    本切片范围内**先文档化**当前行为 + 严格监测非 health 的污染。
 
-    注:本测中我们**仅 patch 了 _cascade**,lifespan 工厂引用的是 app 创建时的原始
-    _cascade(production);所以**当前实现**:lifespan 会 init production health_store!
-    本测的真实意图是**让 OpenCode HIGH #1 的潜在反例可观测**——若 starlette/lifespan
-    行为改变(或_probe_targets 非空),production data 写入立即被 mtime 监测抓出。
+    防假绿:
+      - sanity:before/after 至少含 trace.db / ledger.db / circuit.db(production 已存在)
+      - trace/ledger/circuit 三个 db mtime **必须**严格相等(任一变化 → 反例触发,
+        可能是 lifespan 工厂改动或 starlette 行为漂移)
+      - health.db 单独记录(不强制断言),作为已知污染基线
     """
     from llm_router import app as app_mod
 
@@ -443,6 +498,16 @@ def test_lifespan_with_no_probe_targets_does_not_pollute_production_data(
     monkeypatch.setattr(app_mod, "_cascade", test_cascade)
 
     before = _data_dir_mtime_snapshot()
+    # OpenCode 子片4 CRITICAL #1 闭合(防 CI 假绿):sanity 至少 3 个 db 已存在,
+    # 否则 mtime 比较为空字典 vs 空字典 = 跳过断言(假绿)。
+    required_dbs = ("trace.db", "ledger.db", "circuit.db")
+    missing = [n for n in required_dbs if n not in before]
+    assert not missing, (
+        f"production data dir 缺 {missing} —— 跑此测试前需先跑过 cascade.run() "
+        f"或本测无法验 lifespan 是否污染(空快照对空快照永远相等假绿)。"
+        f"修法:在 conftest session-scoped fixture 创建占位 db,或先跑 happy path 测试。"
+    )
+
     with TestClient(app_mod.app) as client:
         r = client.post(
             "/v1/chat/completions",
@@ -451,23 +516,22 @@ def test_lifespan_with_no_probe_targets_does_not_pollute_production_data(
         assert r.status_code == 200
     after = _data_dir_mtime_snapshot()
 
-    # OpenCode HIGH #1 反例闭合:health.db / circuit.db / trace.db / ledger.db 等
-    # production 文件 mtime 不应变化(若变化,lifespan 已偷偷写 production data)。
-    # 注:lifespan 工厂闭包绑定的是**原始** _cascade,故 lifespan startup 实际 init
-    # 的是 production HealthStore (`data/health.db`)。故 health.db mtime **会变**——
-    # 这是当前 starlette TestClient(app) `with` 行为 + lifespan 工厂闭包的真实污染。
-    # 本测**不假装无污染**(lifespan 工厂已绑定 production cascade,patch _cascade 不改
-    # lifespan 的 cascade 引用),而是**显式记录这个边界**:
-    #   - 当前 production 的 _probe_targets 为空 → prober task 不启 → 不写 health.db
-    #     的 record_probe(只 init schema)
-    #   - 故 health.db 可能因 schema 创建变化(若文件不存在),其他 db 不变
-    # 验证:trace.db 与 ledger.db **不变**(lifespan 不动它们)
-    for db_name in ("trace.db", "ledger.db", "circuit.db"):
-        if db_name in before and db_name in after:
-            assert before[db_name] == after[db_name], (
-                f"lifespan 真启不应触动 {db_name},但 mtime "
-                f"before={before[db_name]} after={after[db_name]}"
-            )
+    # OpenCode HIGH #1 闭合:严格监测 trace/ledger/circuit 三 db 不变
+    # (任一变化 → lifespan 真污染了不该碰的 db,反例立败抓住)
+    for db_name in required_dbs:
+        assert before[db_name] == after[db_name], (
+            f"lifespan 真启不应触动 {db_name},但 mtime "
+            f"before={before[db_name]} after={after[db_name]} —— "
+            f"_make_lifespan 工厂可能改动或 starlette 行为漂移。"
+        )
+
+    # health.db 当前确会被污染(lifespan 工厂闭包绑定 production cascade,
+    # _build_cascade 内 HealthStore(_DATA_DIR/'health.db') → init 跑过)。
+    # 不强制断言(架构 caveat 已知),但记录用于诊断:
+    if "health.db" in before and "health.db" in after:
+        # 文档化:health.db mtime 通常会变(因 init 写)——若不变,starlette 没真触发 lifespan,
+        # 反而说明本测的"with 真启"前提失效——同样是值得诊断的信号。
+        pass  # 不断言,留诊断空间
 
     # patched cascade 真被使用(handler 走 patched _cascade,写 tmp_path)
     assert counter == {"p": 1}
