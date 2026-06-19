@@ -213,7 +213,9 @@ def test_budget_exhausted_after_six_hard_failures_stops_at_seventh(tmp_path):
     ④ last_reason="budget_exhausted"。
     """
     counter: dict[str, int] = {}
-    names = [f"hard-{i}" for i in range(7)]  # 7 providers,budget=6 拦最后 1 个
+    # OpenCode 子片3 MED #6 闭合:用 DEFAULT_RETRY_BUDGET+1 表达"恰好超 budget 一个",
+    # 让 budget 改动时(如 6→5)provider 数自适应,失败信息直观。
+    names = [f"hard-{i}" for i in range(DEFAULT_RETRY_BUDGET + 1)]
     candidates = [(n, _StubHardFail(n, counter=counter), f"key-{n}") for n in names]
     cascade, health, _br, _ldg = _make_cascade(tmp_path, candidates)
 
@@ -454,14 +456,31 @@ def test_compliance_check_runs_before_cost_gate(tmp_path):
 
     构造:同 entity 多账号违规 + 假装 over_budget 状态(均不应被查到)。
     防假绿:① cascade 早返 compliance_blocked ② counter == {}(不调任何 provider)
-    ③ 标志:用 spy CostGate.survivors 验它**未被调**(若顺序错,合规先放行,会查 ledger)。
+    ③ spy CostGate.survivors / HealthStore.latest_probe / LedgerStore.total 三层均
+    **未被调**(若顺序错,合规先放行,会查 ledger / health。OpenCode 子片3 MED #4
+    闭合:扩 spy 到 health + ledger,防"compliance 移到 health 后但仍早于 cost_gate"
+    误判通过)。
     """
-    spy_calls: list[list[str]] = []
+    spy_cost_calls: list[list[str]] = []
+    spy_health_calls: list[list[str] | None] = []
+    spy_ledger_calls: list[str | None] = []
 
     class _SpyCostGate(CostGate):
         async def survivors(self, names):
-            spy_calls.append(list(names))
+            spy_cost_calls.append(list(names))
             return await super().survivors(names)
+
+    class _SpyHealthStore(HealthStore):
+        async def latest_probe(self, providers=None, *, alive_only=False):
+            spy_health_calls.append(
+                list(providers) if providers is not None else None
+            )
+            return await super().latest_probe(providers, alive_only=alive_only)
+
+    class _SpyLedgerStore(LedgerStore):
+        async def total(self, provider=None):
+            spy_ledger_calls.append(provider)
+            return await super().total(provider)
 
     counter: dict[str, int] = {}
     entries = {
@@ -484,9 +503,9 @@ def test_compliance_check_runs_before_cost_gate(tmp_path):
         ("acct-a", _StubOK("acct-a", counter=counter), "k-a"),
         ("acct-b", _StubOK("acct-b", counter=counter), "k-b"),
     ]
-    health = HealthStore(tmp_path / "health.db")
+    health = _SpyHealthStore(tmp_path / "health.db")
     breaker = CircuitBreaker(tmp_path / "circuit.db")
-    ledger = LedgerStore(tmp_path / "ledger.db")
+    ledger = _SpyLedgerStore(tmp_path / "ledger.db")
     spy_cost_gate = _SpyCostGate(ledger, {"acct-a": 999, "acct-b": 999})
     cascade = Cascade(
         store=TraceStore(tmp_path / "trace.db"),
@@ -510,9 +529,17 @@ def test_compliance_check_runs_before_cost_gate(tmp_path):
     assert res.success is False
     assert res.last_reason == "compliance_blocked"
     assert counter == {}, "合规拒不应触达 provider"
-    assert spy_calls == [], (
-        "compliance 层 ① 必须先于 cost_gate(layer ②)——本测试合规违规时,"
-        f"cost_gate.survivors 不应被调,实际 spy_calls={spy_calls}"
+    assert spy_cost_calls == [], (
+        "compliance 层 ① 必须先于 cost_gate(layer ②)——合规违规时,"
+        f"cost_gate.survivors 不应被调,实际 spy_cost_calls={spy_cost_calls}"
+    )
+    assert spy_health_calls == [], (
+        "compliance 层 ① 必须先于 health 过滤(layer ②)——合规违规时,"
+        f"HealthStore.latest_probe 不应被调,实际 spy_health_calls={spy_health_calls}"
+    )
+    assert spy_ledger_calls == [], (
+        "compliance 层 ① 必须先于 ledger 查询(cost_gate.survivors 内 ledger.total)——"
+        f"合规违规时 LedgerStore.total 不应被调,实际 spy_ledger_calls={spy_ledger_calls}"
     )
 
 
@@ -555,10 +582,12 @@ def test_breaker_global_open_blocks_all_via_derived_aggregate(tmp_path):
     assert res.success is False
     # 全部跳被 allow_request 拒,无一 provider 被调
     assert counter == {}, f"全 OPEN 时不应调 provider;实际 {counter}"
-    # last_reason 是最后一跳的拒因(global_open 或 key_open,看 allow_request 顺序)
-    # cascade.allow 检查 global 派生 → key:此处全 key OPEN → 派生 global OPEN → reason="global_open"
-    assert res.last_reason in ("global_open", "key_open"), (
-        f"应 reason ∈ {{global_open, key_open}}; 实际 {res.last_reason}"
+    # OpenCode 子片3 CRITICAL 闭合:严格断言 global_open(原 析取 in {global_open,
+    # key_open} 是假绿——把 _global_is_open 改 return False,cascade 退到逐 key 检查
+    # 每跳返 key_open 仍绿,但全局派生已失效)。
+    assert res.last_reason == "global_open", (
+        f"派生 global OPEN 应直接 reason='global_open',析取放过 _global_is_open "
+        f"短路失效;实际 {res.last_reason!r}"
     )
 
 
@@ -577,3 +606,182 @@ def _trace_rows_db(tmp_path: Path) -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# OpenCode 子片3 闭合(HIGH×2 + MED×4)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_cascade_run_after_three_accumulated_hard_failures_skips_bad(tmp_path):
+    """OpenCode 子片3 HIGH #1 闭合:跨**多请求**累积 3 连 HARD → 第 4 次 cascade.run()
+    bad 真被 allow_request 拒(reason=key_open),hard-skip 不调 provider.complete。
+
+    与 test_breaker_opens_key_after_three_consecutive_hard_failures(纯状态机)互补:
+    本测验证 cascade 集成路径——子片 1 OpenCode #1 defer 的明确内容是「cascade 内
+    累积 3 HARD 后第 4 跳被 hard-skip」。
+
+    场景:chain=[bad, good];预先用 SOFT 注册 good 到 _keys(绕过 _global_is_open
+    早期边界);连续跑 3 次 cascade.run()(bad HARD 累积 + good 兜底);第 4 次跑
+    cascade.run() 验证 bad 被 allow_request 拒,counter[bad] 不再增。
+    """
+    counter: dict[str, int] = {}
+    candidates = [
+        ("bad", _StubHardFail("bad", counter=counter), "k-bad"),
+        ("good", _StubOK("good", text="ok", model="m-g", counter=counter), "k-good"),
+    ]
+    cascade, health, breaker, _ldg = _make_cascade(tmp_path, candidates)
+
+    async def body():
+        await health.init()
+        try:
+            # 注册 good 到 _keys(SOFT_CONTENT,ratio=3 → hf=0,仍 CLOSED)
+            breaker.record_failure("good", "k-good", TripReason.SOFT_CONTENT)
+            # 连续 3 请求,每次 bad 失败 1 次(HARD +1),good 兜底成功
+            for i in range(3):
+                r = await cascade.run("ping", correlation_id=f"cor-acc-{i}")
+                assert r.success is True, (
+                    f"前 3 请求 good 兜底应成功,第 {i} 次 res={r}"
+                )
+            # bad 应已 OPEN
+            assert breaker.get_key_state("bad", "k-bad").state.value == "open"
+            # 记录第 4 请求前 bad 调用次数(应为 3)
+            bad_calls_before = counter.get("bad", 0)
+            assert bad_calls_before == 3
+            # 第 4 请求:bad 应被 allow_request 拒,counter[bad] **不变**
+            r4 = await cascade.run("ping", correlation_id="cor-acc-4")
+            return r4, bad_calls_before
+        finally:
+            await health.close()
+
+    r4, bad_calls_before = _run(body())
+    assert r4.success is True
+    assert r4.final_text == "ok"
+    assert counter.get("bad", 0) == bad_calls_before, (
+        f"bad OPEN 后第 4 请求不应调 bad.complete,实际 calls={counter.get('bad')}"
+    )
+    # good 累计 4 次成功(前 3 + 第 4)
+    assert counter.get("good") == 4
+
+
+def test_cost_gate_fail_open_when_ledger_query_raises(tmp_path):
+    """OpenCode 子片3 HIGH #2 闭合:CostGate.survivors fail-open 路径——ledger.total
+    抛异常时无条件返全 names(软约束,DB hiccup 不阻请求)。
+
+    设计选择层(非 bug)真覆盖:用 mock LedgerStore.total 抛 RuntimeError,验证
+    CostGate.survivors 返 list(names) 全集而非空集。
+    """
+
+    class _BrokenLedgerStore(LedgerStore):
+        async def total(self, provider=None):
+            raise RuntimeError("simulated DB lock / table corrupted")
+
+    ledger = _BrokenLedgerStore(tmp_path / "ledger.db")
+    quotas = {"p1": 100, "p2": 50}
+    cost_gate = CostGate(ledger, quotas)
+
+    async def body():
+        # 不 init ledger(模拟连接失败)
+        survivors = await cost_gate.survivors(["p1", "p2"])
+        return survivors
+
+    res = _run(body())
+    # fail-open:返全 names 而非空集
+    assert res == ["p1", "p2"], (
+        f"ledger 抛异常时 CostGate 应 fail-open 返全候选,实际 {res}"
+    )
+
+
+def test_no_candidates_via_cost_gate_quota_zero_distinct_from_health(tmp_path):
+    """OpenCode 子片3 MED #2 闭合:no_candidates 也可由 cost_gate quota=0 全剔出触发,
+    与 health 死亡互补。区分两条进入 no_candidates 的路径(防 health 过滤静默失效假绿)。
+
+    构造:health 全活 + cost_gate 全 quota=0 → 进 _surviving_candidates 后 health
+    放行全部 → cost_gate 全剔出 → survivors=[] → no_candidates。
+    """
+    counter: dict[str, int] = {}
+    candidates = [
+        ("p1", _StubOK("p1", counter=counter), "k1"),
+        ("p2", _StubOK("p2", counter=counter), "k2"),
+    ]
+    quotas = {"p1": 0, "p2": 0}  # 全 quota=0 → 0>=0 全剔
+    cascade, health, _br, ledger = _make_cascade(
+        tmp_path, candidates, quotas=quotas
+    )
+
+    async def body():
+        await health.init()
+        await ledger.init()
+        try:
+            # 显式 health.record_probe 全活(防隐式无信号 fail-open 误判)
+            for n in ("p1", "p2"):
+                await health.record_probe(n, latency_ms=1.0, alive=True)
+            return await cascade.run("ping", correlation_id="cor-cost-zero")
+        finally:
+            await health.close()
+
+    res = _run(body())
+    assert res.success is False
+    assert res.last_reason == "no_candidates"
+    assert counter == {}, "全 quota=0 应被 cost_gate 全剔出,无 provider 被调"
+
+
+def test_breaker_global_open_caveat_unregistered_provider_blocked(tmp_path):
+    """OpenCode 子片3 MED #1 闭合:覆盖 record_success 不 setdefault 的生产边界 bug。
+
+    场景:bad 经 cascade.run() 累积 3 HARD → OPEN;good **从未失败** → 不在 _keys
+    (record_success 内 self._keys.get() 不 setdefault,首次成功不注册);派生
+    _global_is_open 仅遍历 _keys 已知 provider → 当 _keys = {bad: OPEN} 时,
+    所有"已知 provider"都 OPEN → global 派生 OPEN → good 无差别被阻断。
+
+    触发时机:**bad 第 3 次 HARD 失败的同一请求内** —— bad 在 record_failure 后立即
+    OPEN,接着 cascade 推进到 chain[1]=good 时,allow_request 先查 _global_is_open()
+    → True → Decision(False, "global_open") → good 拒,该请求失败。
+
+    本测**作为 caveat 文档**(不修代码——产品决策),验证当前真实行为。若 Phase 2
+    改 record_success 也 setdefault(让 good 在 _keys 中保持 CLOSED),派生 global
+    会看到 bad+good 不全 OPEN → 不冻结 → good 可路由,r3 兜底成功——本测会败,
+    等价 caveat 已闭合。
+    """
+    counter: dict[str, int] = {}
+    candidates = [
+        ("bad", _StubHardFail("bad", counter=counter), "k-bad"),
+        ("good", _StubOK("good", text="ok", model="m-g", counter=counter), "k-good"),
+    ]
+    cascade, health, breaker, _ldg = _make_cascade(tmp_path, candidates)
+
+    async def body():
+        await health.init()
+        try:
+            # 前 2 请求:bad fail(hf 1→2,仍 CLOSED)+ good 兜底成功(record_success
+            # 但 good 不进 _keys)
+            for i in range(2):
+                r = await cascade.run("ping", correlation_id=f"cor-cav-{i}")
+                assert r.success is True, f"r{i} good 应兜底成功,实际 {r}"
+            assert breaker.get_key_state("bad", "k-bad").state.value == "closed"
+            # 关键 caveat 判定:_keys 应只含 bad(good 从未失败,record_success 不
+            # setdefault)
+            assert ("good", "k-good") not in breaker._keys, (
+                "caveat 前提:record_success 不 setdefault → good 不在 _keys"
+            )
+            # 第 3 请求:bad 第 3 次 fail → OPEN at record_failure,接着 allow(good):
+            #            _global_is_open() 看 _providers_with_keys()={bad} 全 OPEN
+            #            → True → Decision(False, "global_open") → good 拒
+            r3 = await cascade.run("ping", correlation_id="cor-cav-2")
+            return r3
+        finally:
+            await health.close()
+
+    r3 = _run(body())
+    # caveat 验证:r3 中 bad 真 OPEN 后,good 因派生 global_open 被无差别拒
+    assert r3.success is False
+    assert r3.last_reason == "global_open", (
+        f"caveat:bad OPEN + good 不在 _keys → 派生 global all-open → global_open;"
+        f"实际 {r3.last_reason}"
+    )
+    # good 总调用 = 2(前 2 次成功);r3 中 good 被 allow_request 拒,不调 complete
+    assert counter.get("good") == 2, (
+        f"caveat:r3 被 global_open 拒,good 不应被调到第 3 次;实际 {counter}"
+    )
+    # bad 总调用 = 3(前 2 次失败 + r3 第 3 次失败 → OPEN)
+    assert counter.get("bad") == 3
