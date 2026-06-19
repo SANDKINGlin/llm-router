@@ -187,3 +187,80 @@ def test_correlation_reconstructs_fallback_chain(tmp_path):
             await store.close()
 
     _run(body())
+
+
+# ── S1.1 增强子片 0.2(2026-06-19,A2):热冷表 schema 预留(WAL-02 优化路径) ──
+
+
+def test_hot_cold_tables_coexist_with_trace_phase2_schema_reservation(tmp_path):
+    """A2 契约:`trace_hot` / `trace_cold` 两表与 `trace` 共存,字段一致。
+
+    **本切片范围**:仅建表,不接读写路径。`trace` 表保留为 Phase 1 写入入口
+    (向后兼容,329p 测试不动);Phase 2 后续子片接 commit() 双写 hot + 异步迁移 cold。
+
+    断言:
+      - 三表都存在(sqlite_master 查询)
+      - hot/cold 表 columns 与 trace 表完全一致(PRAGMA table_info)
+      - hot/cold 表现在为空(无写入路径触动)
+      - 现有 trace 写入(acquire+commit)只入 trace 表,不污染 hot/cold(隔离守门)
+    """
+    import sqlite3
+
+    from llm_router.store.trace import (
+        TRACE_COLD_COLUMNS,
+        TRACE_COLUMNS,
+        TRACE_HOT_COLUMNS,
+    )
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            # 现有 trace 写入路径(Phase 1 不动):acquire + commit
+            o = await store.acquire(
+                correlation_id="cid-A2",
+                idempotency_key="idem-A2",
+                provider="p-A2",
+            )
+            assert o.status == AcquireStatus.OWNER
+            await store.commit(trace_id=o.trace_id, result="r-A2")
+        finally:
+            await store.close()
+
+    _run(body())
+
+    # 三表共存(sqlite3 直查 sqlite_master)
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'trace%'"
+            )
+        }
+        assert tables == {"trace", "trace_hot", "trace_cold"}, (
+            f"三表(trace/trace_hot/trace_cold)应共存;实际 {tables}"
+        )
+
+        # hot/cold 字段与 trace 完全一致(共享 TRACE_COLUMNS)
+        for tbl in ("trace_hot", "trace_cold"):
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+            assert tuple(cols) == TRACE_COLUMNS, (
+                f"{tbl} 字段应与 TRACE_COLUMNS 一致;实际 {cols}"
+            )
+
+        # 静态契约:HOT_COLUMNS / COLD_COLUMNS 元组就是 TRACE_COLUMNS 同源(共享标识)
+        assert TRACE_HOT_COLUMNS is TRACE_COLUMNS
+        assert TRACE_COLD_COLUMNS is TRACE_COLUMNS
+
+        # 隔离守门:现有 trace 写入只入 trace 表,**不污染** hot/cold
+        # (本切片范围:hot/cold 仅 schema,无双写路径)
+        trace_count = conn.execute("SELECT COUNT(*) FROM trace").fetchone()[0]
+        hot_count = conn.execute("SELECT COUNT(*) FROM trace_hot").fetchone()[0]
+        cold_count = conn.execute("SELECT COUNT(*) FROM trace_cold").fetchone()[0]
+        assert trace_count == 1, f"trace 应有 1 行(acquire+commit);实际 {trace_count}"
+        assert hot_count == 0, (
+            f"trace_hot 不该被现有路径写入(本切片仅 schema);实际 {hot_count} 行"
+        )
+        assert cold_count == 0, (
+            f"trace_cold 不该被现有路径写入(本切片仅 schema);实际 {cold_count} 行"
+        )

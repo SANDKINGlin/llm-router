@@ -40,6 +40,48 @@ CREATE TABLE IF NOT EXISTS trace (
 );
 CREATE INDEX IF NOT EXISTS idx_trace_correlation ON trace(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_trace_parent ON trace(parent_correlation_id);
+
+-- S1.1 增强子片 0.2(2026-06-19,A2):热冷表分离 schema 预留(WAL-02 优化路径)。
+-- **本切片仅建表,不接读写路径**——`trace` 表保留为 Phase 1 现有写入入口
+-- (向后兼容,329p 测试不动);后续子片接 commit() 双写 hot + 异步迁移 cold。
+-- 字段与 `trace` 完全一致(共享 TRACE_COLUMNS),便于 Phase 2 commit() 双写 + 迁移
+-- 时不做 schema 转换。idempotency_key UNIQUE 保留(hot 表也是写入入口候选)。
+-- 设计意图:design.md §持久化"Phase2 热冷表分离(WAL-02)"+ task 24 (S1.1增强)。
+CREATE TABLE IF NOT EXISTS trace_hot (
+    trace_id              TEXT PRIMARY KEY,
+    correlation_id        TEXT NOT NULL,
+    parent_correlation_id TEXT,
+    idempotency_key       TEXT NOT NULL UNIQUE,
+    provider              TEXT NOT NULL,
+    result                TEXT,
+    latency               REAL,
+    cost                  REAL,
+    reward                REAL,
+    reward_committed_at   TEXT,
+    hop_attribution       TEXT,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trace_hot_correlation ON trace_hot(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_trace_hot_parent ON trace_hot(parent_correlation_id);
+CREATE INDEX IF NOT EXISTS idx_trace_hot_created ON trace_hot(created_at);
+
+CREATE TABLE IF NOT EXISTS trace_cold (
+    trace_id              TEXT PRIMARY KEY,
+    correlation_id        TEXT NOT NULL,
+    parent_correlation_id TEXT,
+    idempotency_key       TEXT NOT NULL UNIQUE,
+    provider              TEXT NOT NULL,
+    result                TEXT,
+    latency               REAL,
+    cost                  REAL,
+    reward                REAL,
+    reward_committed_at   TEXT,
+    hop_attribution       TEXT,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trace_cold_correlation ON trace_cold(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_trace_cold_parent ON trace_cold(parent_correlation_id);
+CREATE INDEX IF NOT EXISTS idx_trace_cold_created ON trace_cold(created_at);
 """
 
 # 蓝图 §4 S1.1 的 12 字段(权威字段名)。
@@ -57,6 +99,11 @@ TRACE_COLUMNS: tuple[str, ...] = (
     "hop_attribution",
     "created_at",
 )
+
+# S1.1 增强子片 0.2:hot/cold 表 schema 与 trace 表一致(便于双写 + 异步迁移)。
+# 字段同 TRACE_COLUMNS——任何字段演化必须三表同步(本切片只建空表,不写读写)。
+TRACE_HOT_COLUMNS: tuple[str, ...] = TRACE_COLUMNS
+TRACE_COLD_COLUMNS: tuple[str, ...] = TRACE_COLUMNS
 
 
 class AcquireStatus(str, Enum):
