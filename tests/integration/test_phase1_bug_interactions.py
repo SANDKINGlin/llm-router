@@ -726,22 +726,24 @@ def test_no_candidates_via_cost_gate_quota_zero_distinct_from_health(tmp_path):
     assert counter == {}, "全 quota=0 应被 cost_gate 全剔出,无 provider 被调"
 
 
-def test_breaker_global_open_caveat_unregistered_provider_blocked(tmp_path):
-    """OpenCode 子片3 MED #1 闭合:覆盖 record_success 不 setdefault 的生产边界 bug。
+def test_breaker_global_open_caveat_resolved_record_success_setdefault(tmp_path):
+    """OpenCode 子片3 MED #1 + S1.0 caveat 修复(2026-06-19)闭合验证。
 
-    场景:bad 经 cascade.run() 累积 3 HARD → OPEN;good **从未失败** → 不在 _keys
-    (record_success 内 self._keys.get() 不 setdefault,首次成功不注册);派生
-    _global_is_open 仅遍历 _keys 已知 provider → 当 _keys = {bad: OPEN} 时,
-    所有"已知 provider"都 OPEN → global 派生 OPEN → good 无差别被阻断。
+    历史 caveat:bad 经 cascade.run() 累积 3 HARD → OPEN;good 从未失败 → 不在 _keys
+    (record_success 用 .get() 不 setdefault,首次成功不注册);派生 _global_is_open
+    仅遍历 _keys 已知 provider → _keys = {bad: OPEN} 时,所有"已知 provider"全 OPEN
+    → global 派生 OPEN → good 无差别被阻断。
 
-    触发时机:**bad 第 3 次 HARD 失败的同一请求内** —— bad 在 record_failure 后立即
-    OPEN,接着 cascade 推进到 chain[1]=good 时,allow_request 先查 _global_is_open()
-    → True → Decision(False, "global_open") → good 拒,该请求失败。
+    **S1.0 修复**(circuit_breaker.py:272 `.get()` → `.setdefault()`):good 首次成功后
+    入 _keys 保持 CLOSED;派生 _global_is_open 看到 bad OPEN + good CLOSED → 不全 OPEN
+    → False → good 不再被 global_open 拦下,r3 兜底成功。
 
-    本测**作为 caveat 文档**(不修代码——产品决策),验证当前真实行为。若 Phase 2
-    改 record_success 也 setdefault(让 good 在 _keys 中保持 CLOSED),派生 global
-    会看到 bad+good 不全 OPEN → 不冻结 → good 可路由,r3 兜底成功——本测会败,
-    等价 caveat 已闭合。
+    本测**翻面验证 caveat 已闭合**:
+      - r3 应**成功**(good 兜底,非 global_open 拒)
+      - good ('good','k-good') 应在 _keys(setdefault 注册 CLOSED)
+      - good 调用计数 = 3(前 2 次 + r3 第 3 次兜底,非 2 次)
+      - bad 调用计数 = 3(3 次失败 → OPEN,allow_request 后续仍可被打到的可能但因
+        chain 顺序 bad 先尝试)
     """
     counter: dict[str, int] = {}
     candidates = [
@@ -753,35 +755,37 @@ def test_breaker_global_open_caveat_unregistered_provider_blocked(tmp_path):
     async def body():
         await health.init()
         try:
-            # 前 2 请求:bad fail(hf 1→2,仍 CLOSED)+ good 兜底成功(record_success
-            # 但 good 不进 _keys)
+            # 前 2 请求:bad fail(hf 1→2,仍 CLOSED)+ good 兜底成功
+            # S1.0 修复后:good 第 1 次成功即 setdefault 入 _keys CLOSED
             for i in range(2):
                 r = await cascade.run("ping", correlation_id=f"cor-cav-{i}")
                 assert r.success is True, f"r{i} good 应兜底成功,实际 {r}"
             assert breaker.get_key_state("bad", "k-bad").state.value == "closed"
-            # 关键 caveat 判定:_keys 应只含 bad(good 从未失败,record_success 不
-            # setdefault)
-            assert ("good", "k-good") not in breaker._keys, (
-                "caveat 前提:record_success 不 setdefault → good 不在 _keys"
+            # S1.0 修复后核心断言:good 应入 _keys CLOSED(原 caveat 不在,翻面)
+            assert ("good", "k-good") in breaker._keys, (
+                "S1.0 修复:record_success setdefault → good 应在 _keys"
             )
-            # 第 3 请求:bad 第 3 次 fail → OPEN at record_failure,接着 allow(good):
-            #            _global_is_open() 看 _providers_with_keys()={bad} 全 OPEN
-            #            → True → Decision(False, "global_open") → good 拒
+            assert breaker.get_key_state("good", "k-good").state.value == "closed"
+            # 第 3 请求:bad 第 3 次 fail → OPEN at record_failure;接着 allow(good):
+            #   _global_is_open() 看 _providers_with_keys()={bad,good},bad OPEN+good
+            #   CLOSED → 不全 OPEN → False → good 放行 → 兜底成功(caveat 已闭合)
             r3 = await cascade.run("ping", correlation_id="cor-cav-2")
             return r3
         finally:
             await health.close()
 
     r3 = _run(body())
-    # caveat 验证:r3 中 bad 真 OPEN 后,good 因派生 global_open 被无差别拒
-    assert r3.success is False
-    assert r3.last_reason == "global_open", (
-        f"caveat:bad OPEN + good 不在 _keys → 派生 global all-open → global_open;"
-        f"实际 {r3.last_reason}"
+    # 翻面验证:r3 兜底成功,non-global_open
+    assert r3.success is True, (
+        f"S1.0 修复:bad OPEN + good CLOSED in _keys → 派生 global 不全 OPEN → "
+        f"good 兜底应成功;实际 {r3}"
     )
-    # good 总调用 = 2(前 2 次成功);r3 中 good 被 allow_request 拒,不调 complete
-    assert counter.get("good") == 2, (
-        f"caveat:r3 被 global_open 拒,good 不应被调到第 3 次;实际 {counter}"
+    assert r3.final_text == "ok"
+    assert r3.final_model == "m-g", (
+        f"r3 应由 good 兜底(model='m-g'),实际 {r3.final_model}"
     )
-    # bad 总调用 = 3(前 2 次失败 + r3 第 3 次失败 → OPEN)
+    # good 调用 3 次(前 2 + r3 兜底);bad 调用 3 次(3 次失败 → OPEN)
+    assert counter.get("good") == 3, (
+        f"S1.0 修复:r3 good 兜底应被调到第 3 次;实际 {counter}"
+    )
     assert counter.get("bad") == 3

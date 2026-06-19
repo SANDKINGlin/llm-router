@@ -270,10 +270,14 @@ class CircuitBreaker:
         # provider/global 派生,无需显式级联 trip。
 
     def record_success(self, provider: str, key: str) -> None:
-        """成功记录:key 状态机闭环。provider/global 派生,自动随 key 恢复。"""
-        ks = self._keys.get((provider, key))
-        if ks is None:
-            return
+        """成功记录:key 状态机闭环。provider/global 派生,自动随 key 恢复。
+
+        S1.0 caveat 修复(2026-06-19):用 setdefault 注册 first-success key 进 _keys
+        (state=CLOSED),让派生 _global_is_open / _provider_is_open 看到 good provider
+        在场,防单一 trip(如 bad OPEN)时其他从未失败的 provider 被误判为"全 OPEN"
+        而拦下请求(原 caveat 见子片 3 documented test;现已闭合)。
+        """
+        ks = self._keys.setdefault((provider, key), KeyState())
         if ks.state in (CircuitState.HALF_OPEN, CircuitState.OPEN):
             ks.state = CircuitState.CLOSED
             ks.hard_failures = 0

@@ -160,7 +160,9 @@ def test_burst_single_provider_does_not_cascade_avalanche(tmp_path):
     cascade, breaker = _make_cascade(tmp_path, candidates)
 
     async def body():
-        # 注册 good 到 _keys(避开 record_success 不 setdefault 的 caveat,见子片 3 caveat 测试)
+        # S1.0 修复后(2026-06-19):record_success setdefault → good 首次成功即入 _keys CLOSED
+        # 派生 _global_is_open 不再因单一 trip 误判全 OPEN。本行 SOFT 标 good 仍保留以保持
+        # 测试场景的明确性(确保 good 在 _keys 是显式可见,与防雪崩主断言无关)。
         breaker.record_failure("good", "k-good", TripReason.SOFT_CONTENT)
         N = 30
         await cascade._health_store.init()
@@ -261,8 +263,9 @@ def _zero_jitter():
 def _make_test_breaker(tmp_path: Path, *, key_hard_threshold: int = 3) -> CircuitBreaker:
     """构造可控 breaker:_jitter_fn=0,_now_override 由 caller 推进。
 
-    顺手注册一个 'neighbor' CLOSED key —— 防派生 _global_is_open 在单一 key OPEN
-    时误判全 OPEN(即 [[caveat]] 子片 3 documented 的 record_success 不 setdefault 边界)。
+    历史 work-around(已不必要,2026-06-19 S1.0 修复):原本注册一个 'neighbor' CLOSED key
+    避开 record_success 不 setdefault 的 caveat;S1.0 修复后 good 首次成功即入 _keys,
+    派生不再误判,但保留 neighbor 注册以保持测试场景多样性(状态机测试隔离 cleaner)。
     """
     breaker = CircuitBreaker(
         tmp_path / "circuit.db", key_hard_threshold=key_hard_threshold
@@ -461,27 +464,27 @@ def test_lifespan_with_with_block_starts_and_stops_cleanly(tmp_path, monkeypatch
     assert counter == {"p": 1}
 
 
-def test_lifespan_with_no_probe_targets_only_pollutes_health_db_via_init(
+def test_lifespan_with_no_probe_targets_zero_pollution_after_callable_fix(
     tmp_path, monkeypatch
 ):
-    """A3.2 OpenCode 子片 2 HIGH #1 + 子片 4 HIGH #1 闭合:lifespan 真启 + 无
-    probe_targets(production 默认)→ **仅 health.db 因 schema init 可能有 mtime 变化**;
-    其他 db(trace / ledger / circuit)**绝对不变**——这是当前 lifespan 工厂闭包绑定
-    原始 _cascade 的真实污染范围(架构 caveat,非测试假绿)。
+    """A3.2 OpenCode 子片 2 HIGH #1 + 子片 4 HIGH #1 + S1.0 caveat 2 修复(2026-06-19)
+    闭合验证:lifespan 真启 + 无 probe_targets(production 默认)→ **production data 全 4 个
+    db(trace/ledger/circuit/health)mtime 严格不变**——零污染。
 
-    **测试名诚实化**(子片 4 OpenCode HIGH #1 反驳):原名 "does_not_pollute" 是误导
-    (lifespan 闭包绑定 production cascade,health.db 实际**会被污染**——init 跑就建表/
-    更新文件)。改成 "only_pollutes_health_db_via_init" 显示当前真实状态,精确监测
-    其他 3 个 db。
+    **测试翻面**(2026-06-19,S1.0 caveat 2 修复后):
+    历史名 "only_pollutes_health_db_via_init" 是当时诚实化(_make_lifespan 闭包硬绑
+    production _cascade,monkeypatch _cascade 不影响已构造闭包,health.db 必污)。
+    S1.0 修复改 _make_lifespan 接 callable resolver,production 传 ``lambda: _cascade``,
+    每次 startup 重新解析 module attr → monkeypatch 后 lifespan 用 test_cascade
+    (HealthStore 指 tmp_path/health.db),production health.db 不再被触动。
 
-    架构闭合路径(Phase 2 决策):若想真"零污染",需重构 _make_lifespan 为可注入 cascade。
-    本切片范围内**先文档化**当前行为 + 严格监测非 health 的污染。
+    现在改名 "zero_pollution_after_callable_fix" + **严格断言 4 个 db 全不变**(包括
+    health.db)。任一变化 = caveat 2 修复回退或 starlette 行为漂移,反例立败。
 
     防假绿:
-      - sanity:before/after 至少含 trace.db / ledger.db / circuit.db(production 已存在)
-      - trace/ledger/circuit 三个 db mtime **必须**严格相等(任一变化 → 反例触发,
-        可能是 lifespan 工厂改动或 starlette 行为漂移)
-      - health.db 单独记录(不强制断言),作为已知污染基线
+      - sanity:before/after 至少含 trace.db / ledger.db / circuit.db / health.db
+      - 4 个 db mtime **必须**严格相等(任一变化 → 反例触发)
+      - patched cascade 真被使用(counter 验)
     """
     from llm_router import app as app_mod
 
@@ -498,9 +501,9 @@ def test_lifespan_with_no_probe_targets_only_pollutes_health_db_via_init(
     monkeypatch.setattr(app_mod, "_cascade", test_cascade)
 
     before = _data_dir_mtime_snapshot()
-    # OpenCode 子片4 CRITICAL #1 闭合(防 CI 假绿):sanity 至少 3 个 db 已存在,
+    # OpenCode 子片4 CRITICAL #1 闭合(防 CI 假绿):sanity 至少 4 个 db 已存在,
     # 否则 mtime 比较为空字典 vs 空字典 = 跳过断言(假绿)。
-    required_dbs = ("trace.db", "ledger.db", "circuit.db")
+    required_dbs = ("trace.db", "ledger.db", "circuit.db", "health.db")
     missing = [n for n in required_dbs if n not in before]
     assert not missing, (
         f"production data dir 缺 {missing} —— 跑此测试前需先跑过 cascade.run() "
@@ -516,22 +519,14 @@ def test_lifespan_with_no_probe_targets_only_pollutes_health_db_via_init(
         assert r.status_code == 200
     after = _data_dir_mtime_snapshot()
 
-    # OpenCode HIGH #1 闭合:严格监测 trace/ledger/circuit 三 db 不变
-    # (任一变化 → lifespan 真污染了不该碰的 db,反例立败抓住)
+    # S1.0 caveat 2 修复闭合:严格监测 4 个 db 不变(health.db 也算)
+    # 任一变化 → caveat 2 修复回退(callable resolver 失效)或 starlette 行为漂移,反例立败
     for db_name in required_dbs:
         assert before[db_name] == after[db_name], (
-            f"lifespan 真启不应触动 {db_name},但 mtime "
-            f"before={before[db_name]} after={after[db_name]} —— "
-            f"_make_lifespan 工厂可能改动或 starlette 行为漂移。"
+            f"S1.0 caveat 2 修复:lifespan 真启 + monkeypatch _cascade → "
+            f"production {db_name} mtime 应不变,但 before={before[db_name]} "
+            f"after={after[db_name]} —— callable resolver 失效或 starlette 漂移。"
         )
-
-    # health.db 当前确会被污染(lifespan 工厂闭包绑定 production cascade,
-    # _build_cascade 内 HealthStore(_DATA_DIR/'health.db') → init 跑过)。
-    # 不强制断言(架构 caveat 已知),但记录用于诊断:
-    if "health.db" in before and "health.db" in after:
-        # 文档化:health.db mtime 通常会变(因 init 写)——若不变,starlette 没真触发 lifespan,
-        # 反而说明本测的"with 真启"前提失效——同样是值得诊断的信号。
-        pass  # 不断言,留诊断空间
 
     # patched cascade 真被使用(handler 走 patched _cascade,写 tmp_path)
     assert counter == {"p": 1}

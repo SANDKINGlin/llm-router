@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,8 +93,8 @@ _probe_targets: list[tuple[str, Provider]] = [
 
 
 def _make_lifespan(
-    cascade: Cascade,
-    probe_targets: list[tuple[str, Provider]],
+    cascade_resolver: "Callable[[], Cascade] | Cascade",
+    probe_targets_resolver: "Callable[[], list[tuple[str, Provider]]] | list[tuple[str, Provider]]",
     *,
     interval_seconds: float = 300.0,
     probe_timeout_seconds: float = 10.0,
@@ -105,10 +106,29 @@ def _make_lifespan(
     prober.run_loop(stop)(on_alive=cascade.feed_probe_success 喂 HALF_OPEN,Face 3);
     **仅当有探活目标才起 task**(无真 key → 空转无意义)。shutdown:stop_event.set + cancel
     task + store.close。
+
+    S1.0 修复(2026-06-19,caveat 2 闭合):接 callable resolver(或裸 cascade/list 兼容旧测试)
+    替代闭包硬绑;production 仍传 ``lambda: _cascade`` 行为不变(每次 startup 解析当前 attr),
+    测试 monkeypatch ``_cascade = test_cascade`` 后 lifespan 解析到 test_cascade,不再污染
+    production data/health.db。原 caveat:`_cascade = _build_cascade()` import 期构造,
+    `lifespan=_make_lifespan(_cascade, ...)` 闭包硬绑该实例,测试 `with TestClient(app)`
+    会触发 startup 调 `cascade.health_store.init()` 写 production health.db。
     """
+
+    def _resolve_cascade() -> "Cascade":
+        return cascade_resolver() if callable(cascade_resolver) else cascade_resolver
+
+    def _resolve_targets() -> "list[tuple[str, Provider]]":
+        return (
+            probe_targets_resolver()
+            if callable(probe_targets_resolver)
+            else probe_targets_resolver
+        )
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
+        cascade = _resolve_cascade()
+        probe_targets = _resolve_targets()
         store = cascade.health_store
         if store is not None:
             await store.init()
@@ -145,7 +165,14 @@ def _make_lifespan(
 
 
 app = FastAPI(
-    title="llm-router", version="0.0.1", lifespan=_make_lifespan(_cascade, _probe_targets)
+    title="llm-router",
+    version="0.0.1",
+    # S1.0 caveat 2 修复:传 callable 解析当前 module attr(每次 startup 解析),
+    # 测试 monkeypatch.setattr(app_mod, "_cascade", tmp) 后 lifespan 跑用 tmp,不污染 production data。
+    lifespan=_make_lifespan(
+        lambda: _cascade,
+        lambda: _probe_targets,
+    ),
 )
 
 
