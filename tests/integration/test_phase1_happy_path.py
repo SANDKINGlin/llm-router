@@ -47,7 +47,7 @@ from llm_router.store.trace import TraceStore
 
 
 class _StubProvider(Provider):
-    """可控 provider:配返成功 + 可选 usage,记录调用计数(防假绿)。"""
+    """可控 provider:配返成功 + 可选 usage,记录调用计数 + 抓 prompt(防假绿)。"""
 
     def __init__(
         self,
@@ -57,35 +57,48 @@ class _StubProvider(Provider):
         model: str = "stub-model",
         usage: Usage | None = None,
         counter: dict[str, int] | None = None,
+        prompts: list[str] | None = None,
     ) -> None:
         self.name = name
         self._text = text
         self._model = model
         self._usage = usage
         self._counter = counter
+        # OpenCode 子片2 MED #1:抓 prompt 验 _extract_prompt 真路径。
+        self._prompts = prompts
 
     async def complete(self, prompt: str):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
+        if self._prompts is not None:
+            self._prompts.append(prompt)
         return self._text, self._model, self._usage
 
 
 class _SoftProvider(Provider):
-    """返残缺(text=""),触发 is_complete=False → SOFT_CONTENT(测 fallback 切换)。"""
+    """返残缺(text=""),触发 is_complete=False → SOFT_CONTENT(测 fallback 切换)。
+
+    可选 usage:即便 SOFT 也消耗 token,cascade 设计在 is_complete 判定**前**记账
+    (cascade.py:124)。给 SOFT 配真 usage 后,ledger 应有该跳的记账行——OpenCode
+    子片2 MED #4 反例闭合(若有人把 _record_usage 挪到 is_complete 后,SOFT 不记账,
+    本断言会败)。
+    """
 
     def __init__(
         self,
         name: str = "soft",
         *,
         counter: dict[str, int] | None = None,
+        usage: Usage | None = None,
     ) -> None:
         self.name = name
         self._counter = counter
+        self._usage = usage
 
     async def complete(self, prompt: str):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
-        return "", "soft-model", None  # text="" → is_complete False(SOFT_CONTENT)
+        return "", "soft-model", self._usage  # text="" → is_complete False(SOFT_CONTENT)
 
 
 class _FixedOrderStrategy(RoutingStrategy):
@@ -216,6 +229,8 @@ def test_openai_endpoint_e2e_happy_path_writes_trace(patched_app, tmp_path):
     )
     assert r.status_code == 200, r.text
     body = r.json()
+    # OpenCode 子片2 MED #6 部分接受:补 id 字段断言(响应塑形契约)。
+    assert body["id"] == "chatcmpl-mock"
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["content"] == "hello-A"
     assert body["choices"][0]["finish_reason"] == "stop"
@@ -233,7 +248,10 @@ def test_openai_endpoint_e2e_happy_path_writes_trace(patched_app, tmp_path):
 
 
 def test_anthropic_endpoint_e2e_happy_path_writes_trace(patched_app, tmp_path):
-    """Anthropic /v1/messages:200 + 响应塑形 + 1 trace 行。"""
+    """Anthropic /v1/messages:200 + 响应塑形 + 1 trace 行 + hop_attribution 验证。
+
+    OpenCode 子片2 MED #3 闭合:与 OpenAI 测试对称,补 hop_attribution 断言。
+    """
     app, install = patched_app
     counter: dict[str, int] = {}
     cascade = _make_isolated_cascade(
@@ -249,6 +267,8 @@ def test_anthropic_endpoint_e2e_happy_path_writes_trace(patched_app, tmp_path):
     )
     assert r.status_code == 200, r.text
     body = r.json()
+    # OpenCode 子片2 MED #6 闭合:补 id 字段断言。
+    assert body["id"] == "msg_mock"
     assert body["type"] == "message"
     assert body["role"] == "assistant"
     assert body["content"][0]["type"] == "text"
@@ -260,6 +280,12 @@ def test_anthropic_endpoint_e2e_happy_path_writes_trace(patched_app, tmp_path):
     rows = _trace_rows(tmp_path)
     assert len(rows) == 1
     assert rows[0]["provider"] == "stubB"
+    assert rows[0]["result"] == "hello-B"
+    # OpenCode 子片2 MED #3 闭合:hop_attribution 断言对称(原 OpenAI 测试已做)。
+    attr = parse_attribution(rows[0]["hop_attribution"])
+    assert attr is not None
+    assert attr.depth == 0 and attr.reason == "initial"
+    assert attr.from_provider is None and attr.to_provider == "stubB"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -279,14 +305,24 @@ def test_soft_content_falls_back_to_next_provider_with_correct_hop_chain(
       ③ trace 2 行,hop chain:#0 soft initial / #1 stubB advance(soft_content,
          from=soft, to=stubB)
       ④ #0 result="" / #1 result="recovered-text"(成功 row 才填 result)
+      ⑤ OpenCode 子片2 MED #4 闭合:soft 跳 token 已消耗 → ledger 写入(cascade 设计
+         在 is_complete 判定**前**记账)。若有人把 _record_usage 挪到 is_complete 后,
+         此断言会败(ledger 仅 stubB 1 行,缺 soft 那行)。
     """
     app, install = patched_app
     counter: dict[str, int] = {}
+    soft_usage = Usage(prompt_tokens=20, completion_tokens=0, cost=None)
     candidates: list[tuple[str, Provider, str]] = [
-        ("soft", _SoftProvider("soft", counter=counter), "k1"),
+        ("soft", _SoftProvider("soft", counter=counter, usage=soft_usage), "k1"),
         (
             "stubB",
-            _StubProvider("stubB", text="recovered-text", model="m-B", counter=counter),
+            _StubProvider(
+                "stubB",
+                text="recovered-text",
+                model="m-B",
+                usage=Usage(prompt_tokens=20, completion_tokens=10, cost=None),
+                counter=counter,
+            ),
             "k2",
         ),
     ]
@@ -322,6 +358,16 @@ def test_soft_content_falls_back_to_next_provider_with_correct_hop_chain(
     assert soft_attr.from_provider is None and soft_attr.to_provider == "soft"
     assert stubB_attr.depth == 1 and stubB_attr.reason == "soft_content"
     assert stubB_attr.from_provider == "soft" and stubB_attr.to_provider == "stubB"
+
+    # OpenCode 子片2 MED #4:验 _record_usage 在 is_complete 前(SOFT 跳也记账)。
+    # ledger 应有 2 行(soft 与 stubB 各 1)——若 _record_usage 挪到 is_complete 后,
+    # 仅 stubB 1 行,本断言败。
+    ledger = _ledger_rows(tmp_path)
+    ledger_providers = sorted(r["provider"] for r in ledger)
+    assert ledger_providers == ["soft", "stubB"], (
+        f"_record_usage 应在 is_complete 判定前(SOFT 跳也记账),"
+        f"实际 ledger: {ledger_providers}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -514,3 +560,149 @@ def test_openai_and_anthropic_share_cascade_each_writes_own_trace(
     assert len(cids) == 2  # 两请求 correlation 不同
     providers = {r["provider"] for r in rows}
     assert providers == {"stubS"}  # 同候选,两次都走 stubS
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# OpenCode 子片2 MED #1 闭合:_extract_prompt 真路径透传(防"prompt 永远是空串"假绿)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_extract_prompt_pipes_messages_to_provider(patched_app, tmp_path):
+    """messages 经 _extract_prompt 真拍平送 provider.complete()。
+
+    OpenCode 子片2 MED #1 闭合:之前测试用的 _StubProvider 不消费 prompt,所以即便
+    _extract_prompt 改成 `return ""` 也全绿。本测试用 prompts 列表抓 provider 收到的
+    串,验真传递。
+    """
+    app, install = patched_app
+    captured: list[str] = []
+    cascade = _make_isolated_cascade(
+        tmp_path,
+        [
+            (
+                "stubP",
+                _StubProvider("stubP", text="ok", model="m-P", prompts=captured),
+                "kP",
+            )
+        ],
+    )
+    install(cascade)
+
+    client = TestClient(app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "any",
+            "messages": [
+                {"role": "system", "content": "be concise"},
+                {"role": "user", "content": "ping-A"},
+            ],
+        },
+    )
+    assert r.status_code == 200
+    # _extract_prompt 拍平模式:role: content,以 \n 连接(见 app.py:_extract_prompt)
+    assert captured == ["system: be concise\nuser: ping-A"], (
+        f"prompt 透传断裂:provider 实收 {captured!r}"
+    )
+
+
+def test_extract_prompt_anthropic_path_also_pipes_messages(patched_app, tmp_path):
+    """Anthropic 端点路径同样把 messages 拍平送 provider.complete()(对称验证)。"""
+    app, install = patched_app
+    captured: list[str] = []
+    cascade = _make_isolated_cascade(
+        tmp_path,
+        [
+            (
+                "stubQ",
+                _StubProvider("stubQ", text="ok", model="m-Q", prompts=captured),
+                "kQ",
+            )
+        ],
+    )
+    install(cascade)
+
+    client = TestClient(app)
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "any",
+            "messages": [{"role": "user", "content": "ping-B"}],
+            "max_tokens": 10,
+        },
+    )
+    assert r.status_code == 200
+    assert captured == ["user: ping-B"]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# OpenCode 子片2 MED #2 部分:happy path sanity——证 endpoint 真把 cascade 结果传出
+# (主体失败路径 defer 子片 3:compliance_blocked 真路径变化、no_candidates、budget_exhausted)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_compliance_blocked_returns_200_with_empty_content_sanity(patched_app, tmp_path):
+    """compliance 拒路由 → cascade 早返 (None, None, False, 0, "compliance_blocked"),
+    endpoint `result.final_text or ""` 静默返 200 + 空 content + model="mock"。
+
+    OpenCode 子片2 MED #2 部分接受:本测试是 happy path 的负面 sanity——证当 cascade
+    返回失败结果(success=False,final_text=None)时,endpoint 的响应塑形真把 None 转成
+    空 content + 默认 model,而非异常 5xx 或泄漏 None。Phase1 "static 200"是已知设计
+    模式(同 budget_exhausted/no_candidates/global_open,见子片 1 OpenCode #5 defer 注),
+    错误响应塑形(把 success=False 映射 4xx/5xx)归未来切片。
+    主体的失败路径(no_candidates 真触发 / budget_exhausted / 全 SOFT)defer 子片 3。
+    """
+    # 本测试自建 cascade(不通过 _make_isolated_cascade),为了配两个同 entity 不同
+    # api_key_env 的 entry 触发 PolicyEnforcer.check() 的合规违规(同 provider 多账号)。
+    app, install = patched_app
+    entries = {
+        "acct-a": ProviderEntry(
+            name="acct-a", entity="paid-x", tier="fast",
+            quota=1_000_000, cooldown_s=30, is_free=False, cost_multiplier=1.0,
+            api_key_env="KEY_A",
+        ),
+        "acct-b": ProviderEntry(
+            name="acct-b", entity="paid-x", tier="fast",
+            quota=1_000_000, cooldown_s=30, is_free=False, cost_multiplier=1.0,
+            api_key_env="KEY_B",
+        ),
+    }
+    counter: dict[str, int] = {}
+    candidates: list[tuple[str, Provider, str]] = [
+        ("acct-a", _StubProvider("acct-a", text="should-not-arrive", model="m", counter=counter), "k-a"),
+        ("acct-b", _StubProvider("acct-b", text="should-not-arrive", model="m", counter=counter), "k-b"),
+    ]
+    ledger = LedgerStore(tmp_path / "ledger.db")
+    quotas = {n: 1_000_000 for n in entries}
+    cascade = Cascade(
+        store=TraceStore(tmp_path / "trace.db"),
+        breaker=CircuitBreaker(tmp_path / "circuit.db"),
+        strategy=_FixedOrderStrategy(["acct-a", "acct-b"]),
+        candidates=candidates,
+        health_store=HealthStore(tmp_path / "health.db"),
+        policy_enforcer=PolicyEnforcer(entries.values()),  # 多账号 → ComplianceError
+        ledger=ledger,
+        cost_gate=CostGate(ledger, quotas),
+    )
+    install(cascade)
+
+    client = TestClient(app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "any", "messages": [{"role": "user", "content": "x"}]},
+    )
+    # 静默 200(Phase1 已知设计):final_text=None → `or ""` → ""
+    assert r.status_code == 200
+    body = r.json()
+    assert body["choices"][0]["message"]["content"] == ""
+    assert body["model"] == "mock"  # final_model=None → `or "mock"`
+    # 防假绿:provider 必须**未**被调过(合规拒路由,不 init store/不 plan/不 complete)
+    assert counter == {}, "compliance_blocked 路径不应触达任何 provider"
+    # trace 应空(cascade.run 在 _ensure_store 前早返,未 acquire)。
+    # 注:_ensure_store 在 compliance check **之后**才调,所以 trace.db 表可能未建。
+    try:
+        rows = _trace_rows(tmp_path)
+        assert rows == [], f"compliance_blocked 不应写 trace,实际 {rows}"
+    except sqlite3.OperationalError:
+        # trace 表未建(_ensure_store 未跑过)→ 同样证明合规门早返,可接受。
+        pass
