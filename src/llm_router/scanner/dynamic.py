@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..providers.openai import OpenAIProvider
+from ..config import ProviderEntry
 from ..store.scanner_store import ScannerStore
 from .interview import ProbeFn, interview_batch
 from .pollers import Fetcher, poll_all
@@ -43,6 +44,68 @@ _SOURCE_BASE_URL = {
     ScannerSource.NVIDIA: "https://integrate.api.nvidia.com/v1",
     ScannerSource.OPENROUTER: "https://openrouter.ai/api/v1",
 }
+
+# Phase B · D1:动态条目 ProviderEntry 默认值。is_free=True/cost=0 与静态免费 provider 同档竞争。
+# quota 默认 500000(实现时按 source 调);cooldown_s=30;tier None → 降级 medium
+# (ProviderEntry.tier Literal["strong","medium","fast"] 不接受 None)。
+_DYNAMIC_QUOTA = 500000
+_DYNAMIC_COOLDOWN_S = 30
+_TIER_DEFAULT = "medium"
+
+
+def _dynamic_name(model: DiscoveredModel) -> str:
+    """动态条目稳定唯一 name = `dyn-{source}-{flat_id}`(同 build_dynamic_adapters,守一致)。
+
+    flat_id = model_id 去斜杠(防 "/" 在 CB key / entries dict key 里惹麻烦)。
+    EpsilonGreedy._rank 按 name 查 entries dict,故 entry.name 必须等于候选三元组 name。
+    """
+    flat_id = model.model_id.replace("/", ":")
+    return f"dyn-{model.source.value}-{flat_id}"
+
+
+def dynamic_entry_to_provider_entry(model: DiscoveredModel) -> ProviderEntry:
+    """单个动态 DiscoveredModel → ProviderEntry(进 EpsilonGreedy entries dict)。
+
+    Phase B · D1:造 ProviderEntry 而非绕过 entries dict(EpsilonGreedy._rank 强依赖 entries,
+    name 查不到 → missing 报错)。复用现有字典序排序键,不引入加权。
+
+    字段:
+      - name = `dyn-{source}-{flat_id}`(同 build_dynamic_adapters,守一致)
+      - tier 从 model.tier 取(scanner.db 已贴标);None → 降级 medium
+      - is_free=True / cost_multiplier=0.0(与静态免费 provider 同档竞争,守排序键字典序)
+      - quota=500000(默认,TODO 按 source 调)/ cooldown_s=30
+      - 其余字段(base_url/api_key_env/model/entity)留空——动态 adapter 由 build_dynamic_adapters
+        造,ProviderEntry 只供排序键 + TierMatcher,不参与 adapter 构造。
+    """
+    return ProviderEntry(
+        name=_dynamic_name(model),
+        tier=model.tier if model.tier is not None else _TIER_DEFAULT,
+        quota=_DYNAMIC_QUOTA,
+        cooldown_s=_DYNAMIC_COOLDOWN_S,
+        is_free=True,
+        cost_multiplier=0.0,
+    )
+
+
+def build_dynamic_entries(models: list[DiscoveredModel]) -> list[ProviderEntry]:
+    """批量造 ProviderEntry,供 EpsilonGreedy entries dict 合并(Phase B · B1.2)。
+
+    按 model_id 去重(同 source 同 model_id 仅保留第一条,跨 display_name 抖动稳定)。
+    返回顺序按输入序(去重保留首现),路由选择归 EpsilonGreedy 字典序排序,不由此引入偏好。
+
+    红线:与 build_dynamic_adapters 的 name 集合对齐——入候选池的 name 必须在 entries dict 里有
+    对应 ProviderEntry,否则 _rank missing 报错。缺 key 的 source 在 build_dynamic_adapters 跳过,
+    但 entry 仍造(无害:未入候选池的 entry 不会被 _rank 查到,留作审计/未来接入)。
+    """
+    seen: set[str] = set()
+    entries: list[ProviderEntry] = []
+    for m in models:
+        key = f"{m.source.value}:{m.model_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(dynamic_entry_to_provider_entry(m))
+    return entries
 
 
 @dataclass(frozen=True)
@@ -240,8 +303,8 @@ def build_dynamic_adapters(
         if not base_url:
             continue  # 未知 source(未来扩展)→ 跳过
         # name 稳定且唯一:source + 去斜杠 model_id(防 "/" 在 CB key 里惹麻烦)。
-        flat_id = m.model_id.replace("/", ":")
-        name = f"dyn-{m.source.value}-{flat_id}"
+        # 与 dynamic_entry_to_provider_entry 同 _dynamic_name,守 entries dict 对齐。
+        name = _dynamic_name(m)
         provider = OpenAIProvider(name, api_key=key, base_url=base_url, model=m.model_id)
         account_key = f"{m.source.value.upper()}_API_KEY"
         candidates.append((name, provider, account_key))

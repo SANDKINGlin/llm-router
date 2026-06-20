@@ -19,6 +19,8 @@ from llm_router.scanner.dynamic import (
     SourceTickStats,
     TickResult,
     build_dynamic_adapters,
+    build_dynamic_entries,
+    dynamic_entry_to_provider_entry,
 )
 from llm_router.scanner.snapshot import DiscoveredModel, ScannerSource, Snapshot
 from llm_router.store.scanner_store import ScannerStore
@@ -413,3 +415,91 @@ def test_dynamic_adapters_not_auto_wired():
     build_dynamic_adapters(models, nvidia_key="k")  # 调用
     after = list(app_mod._cascade._candidate_names)
     assert before == after  # production cascade 候选池未被改(routing-change-safety)
+
+
+# ── B1.1/B1.2 · 动态条目造 ProviderEntry(Phase B)──────────────────────
+
+class TestDynamicEntryToProviderEntry:
+    def test_fields_correct_free_zero_cost(self):
+        """动态条目 is_free=True/cost_multiplier=0.0,与静态免费 provider 同档竞争。"""
+        m = _nv("nvidia/llama-3.1-nemotron-70b-instruct", tier="strong")
+        e = dynamic_entry_to_provider_entry(m)
+        assert e.is_free is True
+        assert e.cost_multiplier == 0.0
+        assert e.quota == 500000  # D1 默认(实现时按 source 调)
+        assert e.cooldown_s == 30
+        assert e.tier == "strong"
+
+    def test_name_matches_build_dynamic_adapters(self):
+        """entry name 必须与 build_dynamic_adapters 产出的候选 name 一致
+        (EpsilonGreedy._rank 按 name 查 entries;不一致 → missing 报错)。"""
+        m = _nv("nvidia/llama-3.1-nemotron-70b-instruct", tier="medium")
+        entry = dynamic_entry_to_provider_entry(m)
+        cands = build_dynamic_adapters([m], nvidia_key="k")
+        assert len(cands) == 1
+        assert entry.name == cands[0][0]  # 同 dyn-{source}-{flat_id}
+
+    def test_none_tier_degrades_to_medium(self):
+        """None tier(未推断)→ 降级 medium(ProviderEntry.tier Literal 不接受 None)。"""
+        m = DiscoveredModel(source=ScannerSource.NVIDIA, model_id="a-70b", tier=None)
+        e = dynamic_entry_to_provider_entry(m)
+        assert e.tier == "medium"
+
+    def test_name_stable_and_unique_across_models(self):
+        m1 = _nv("a-70b", tier="strong")
+        m2 = _nv("b-mini", tier="fast")
+        e1 = dynamic_entry_to_provider_entry(m1)
+        e2 = dynamic_entry_to_provider_entry(m2)
+        assert e1.name != e2.name
+        assert dynamic_entry_to_provider_entry(m1).name == e1.name  # 稳定
+
+    def test_openrouter_source_name(self):
+        m = _or("openai/gpt-oss-120b:free", tier="strong")
+        e = dynamic_entry_to_provider_entry(m)
+        assert e.name == "dyn-openrouter-openai:gpt-oss-120b:free"
+        assert e.tier == "strong"
+
+    def test_pure_function_no_global_mutation(self):
+        """纯函数:不碰 app._cascade / 全局 entries。"""
+        import llm_router.app as app_mod
+        before = list(app_mod._cascade._candidate_names)
+        dynamic_entry_to_provider_entry(_nv("a-70b"))
+        assert list(app_mod._cascade._candidate_names) == before
+
+
+class TestBuildDynamicEntries:
+    def test_batch_builds_entries(self):
+        models = [_nv("a-70b", tier="strong"), _or("b:free", tier="fast")]
+        entries = build_dynamic_entries(models)
+        assert len(entries) == 2
+        names = {e.name for e in entries}
+        assert "dyn-nvidia-a-70b" in names
+        assert "dyn-openrouter-b:free" in names
+        # 全部免费零成本
+        assert all(e.is_free for e in entries)
+        assert all(e.cost_multiplier == 0.0 for e in entries)
+
+    def test_empty_models_returns_empty(self):
+        assert build_dynamic_entries([]) == []
+
+    def test_dedup_by_model_id(self):
+        """同 source 同 model_id(可能 display_name 不同)→ 去重为一条 entry。"""
+        m1 = DiscoveredModel(
+            source=ScannerSource.NVIDIA, model_id="a-70b",
+            display_name="A", tier="strong",
+        )
+        m2 = DiscoveredModel(
+            source=ScannerSource.NVIDIA, model_id="a-70b",
+            display_name="A2", tier="strong",
+        )
+        entries = build_dynamic_entries([m1, m2])
+        assert len(entries) == 1
+        assert entries[0].name == "dyn-nvidia-a-70b"
+
+    def test_entries_name_match_adapters(self):
+        """build_dynamic_entries 的 name 集合 == build_dynamic_adapters 的 name 集合(对齐)。"""
+        models = [_nv("a-70b", tier="strong"), _or("b:free", tier="medium")]
+        entry_names = {e.name for e in build_dynamic_entries(models)}
+        cand_names = {c[0] for c in build_dynamic_adapters(models, nvidia_key="k", openrouter_key="k")}
+        assert entry_names == cand_names
+
