@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 Vector = Sequence[float]
 
@@ -105,3 +105,70 @@ class HashEncoder:
         if len(norm) < self._ngram:
             return [norm] if norm else []
         return [norm[i : i + self._ngram] for i in range(len(norm) - self._ngram + 1)]
+
+
+class BgeEncoder:
+    """真 bge-small 编码器(sentence-transformers 懒加载/卸载,S2.9 子片 0.3)。
+
+    spec: capability-matching/spec.md(Req: bge-small 懒加载,编码后卸载,<80MB 稳态)。
+    design D2:bge-small 130MB 懒加载+卸载,峰值<250MB,稳态<80MB(无 bge 时)。
+    design 约束#1(防卡死):embedding 用 bge-small 且懒加载。
+
+    **懒加载**:构造后不占内存;首次 encode()(或显式 load())才构造
+    SentenceTransformer(~130MB)。**卸载**:unload() 释放模型引用,GC 回收(稳态<80MB)。
+    单次 load 复用(不每次 encode 重载,避免慢);显式 unload 时机由调用方决定
+    (校准批量后卸载 / lifespan shutdown 卸载 / 空闲超时卸载 defer)。
+
+    **DI**:`model_factory` 注入(测试确定性,免真 bge 130MB 加载);默认 factory 调真
+    SentenceTransformer。守 Encoder 协议(encode(text)->Vector),可注入 BgeMatcher 经
+    Encoder 槽替 HashEncoder(0.1/0.2 用 HashEncoder,0.3 真 bge 经同槽接入,surgical)。
+
+    **编码后卸载不自动**:encode() 不在每次调用后 unload(否则下次 encode 重载极慢)。
+    调用方按需 unload()(如校准完一批后、lifespan shutdown)。稳态<80MB 指 unload 后状态。
+    """
+
+    DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        *,
+        device: str = "cpu",
+        model_factory: "Callable[[], object] | None" = None,
+        normalize: bool = True,
+    ) -> None:
+        self._model_name = model_name
+        self._device = device
+        self._normalize = normalize
+        self._model = None  # 懒加载:None = 未加载
+        self._factory = model_factory or self._default_factory
+
+    def _default_factory(self):
+        """真 SentenceTransformer 构造(懒:仅 load() 时调,失败 fail-loud)。"""
+        from sentence_transformers import SentenceTransformer  # 延迟 import,守懒加载
+
+        return SentenceTransformer(self._model_name, device=self._device)
+
+    def load(self) -> None:
+        """懒加载模型(幂等:已加载则 noop,不重复调 factory)。"""
+        if self._model is None:
+            self._model = self._factory()
+
+    def unload(self) -> None:
+        """卸载模型(释放 ~130MB,稳态<80MB 契约)。再 encode 会重新 load。"""
+        self._model = None
+
+    def is_loaded(self) -> bool:
+        """是否已加载(测试 + 内存监控用)。"""
+        return self._model is not None
+
+    def encode(self, text: str) -> list[float]:
+        """文本 → 归一化向量(L2 单位向量,与 HashEncoder 一致契约)。
+
+        懒加载:首次调用触发 load()。ST encode 返 ndarray,[text]→[0].tolist()。
+        归一化:normalize_embeddings=True(bge 用 cosine,归一化后内积=cosine)。
+        """
+        self.load()
+        vec = self._model.encode([text], normalize_embeddings=self._normalize)[0]
+        # vec:真 ST 返 ndarray(np.float32),DI fake 返 list[float]。统一转 python float。
+        return [float(x) for x in vec]
