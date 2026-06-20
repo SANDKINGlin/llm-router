@@ -16,7 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27", "openai>=1.0", "respx>=0.21"]
-# Phase2+ 追加: aiosqlite(持久化) / litellm(provider适配) / sentence-transformers(bge)
+# bge 能力匹配(S2.9):真 bge-small-en-v1.5 集成测试 gated,默认 skip。
+# 装:`uv pip install -e ".[bge]"` → 跑:`HF_ENDPOINT=https://hf-mirror.com BGE_INTEGRATION=1 pytest tests/unit/test_bge_encoder.py::TestRealBgeIntegration`
+bge = ["sentence-transformers>=2.2"]
+# Phase2+ 追加: aiosqlite(持久化) / litellm(provider适配)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_router"]
