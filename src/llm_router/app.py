@@ -29,10 +29,16 @@ from .health.probe import HealthProber
 from .providers.base import Provider
 from .providers.mock import MockProvider
 from .resilience.circuit_breaker import CircuitBreaker
-from .scanner.dynamic import build_dynamic_adapters, build_dynamic_entries
+from .scanner.dynamic import (
+    DynamicScanner,
+    build_dynamic_adapters,
+    build_dynamic_entries,
+    dynamic_policy_version,
+    make_openai_probe_factory,
+)
 from .scanner.mnfst import build_adapters, load_manifest
 from .store.health_store import HealthStore
-from .store.scanner_store import load_active_models_sync
+from .store.scanner_store import ScannerStore, load_active_models_sync
 from .store.token_ledger import LedgerStore
 from .store.trace import TraceStore
 
@@ -121,6 +127,64 @@ def _build_cascade() -> Cascade:
 
 _cascade = _build_cascade()
 
+
+def _refresh_and_apply(
+    cascade: Cascade,
+    entries: dict,
+    candidates: list,
+    policy_version: str,
+) -> bool:
+    """同步刷新 strategy/cost_gate/enforcer + cascade.apply_policy(Phase B · B3.2)。
+
+    单一刷新源(供 /admin/rollback + 动态重建回调复用,DRY 防漂移):两者必须同形刷新,否则
+    重建后 strategy entries stale → _rank missing。apply_policy 同 version noop(幂等)。
+    ponytail:各组件自己 refresh(职责分离,同 admin_rollback 注释)。
+    """
+    cascade._strategy.refresh_entries(entries)  # type: ignore[union-attr]
+    cascade._cost_gate.update_quotas({e.name: e.quota for e in entries.values()})  # type: ignore[union-attr]
+    cascade._policy_enforcer.rebuild(entries.values())  # type: ignore[union-attr]
+    return cascade.apply_policy(candidates, policy_version)
+
+
+def _make_rebuild_callback(cascade: Cascade, store: ScannerStore):
+    """Phase B · B3.2:DynamicScanner.tick 有变更 → 重读 active → apply_policy 原子重建候选池。
+
+    回调内:重读 policy/manifest + scanner.db active → 三层 candidates → refresh+apply_policy
+    (version = active 集合 content-hash,同集 noop,守 D3)。复用 _build_three_layer_candidates
+    (单一候选构造源,与 _build_cascade/admin_rollback 同形)。
+
+    回调异常被 DynamicScanner.tick 捕获(B3.1),不崩 tick/run_loop;此处不额外包 try。
+    """
+    async def rebuild(_result) -> None:
+        pol = policy()
+        manifest_entries = load_manifest()
+        entries, candidates = _build_three_layer_candidates(pol, manifest_entries)
+        active = await store.active_models()
+        version = dynamic_policy_version(active)
+        _refresh_and_apply(cascade, entries, candidates, version)
+
+    return rebuild
+
+
+def _production_scanner_factory(cascade: Cascade, store: ScannerStore):
+    """Phase B · D6:构造生产 DynamicScanner(run_loop 每 h tick + on_tick_complete 重建)。
+
+    无 key(NVIDIA + OPENROUTER 都缺)→ 返 None(不起 run_loop,无谓空转,同 probe 无目标纪律)。
+    probe_factory 用 make_openai_probe_factory(打远端免费 provider 自身,零本地模型)。
+    on_tick_complete = _make_rebuild_callback(tick 有变更时原子重建候选池)。
+    """
+    nv = os.environ.get("NVIDIA_API_KEY")
+    orr = os.environ.get("OPENROUTER_API_KEY")
+    if not (nv or orr):
+        return None
+    return DynamicScanner(
+        store,
+        probe_factory=make_openai_probe_factory(),
+        nvidia_key=nv,
+        openrouter_key=orr,
+        on_tick_complete=_make_rebuild_callback(cascade, store),
+    )
+
 # S2.8c 探活目标:真 provider(排 Mock——mock 探活恒活无信号)。模块级算一次(import 期,
 # 与 _cascade 同读一次 manifest/env,一致)。spec Req 1 ping 全部 fallback/paid key;
 # Phase1 provider 少,全 ping(不取"前 2",YAGNI;key 多时再限)。
@@ -135,14 +199,23 @@ def _make_lifespan(
     *,
     interval_seconds: float = 300.0,
     probe_timeout_seconds: float = 10.0,
+    scanner_factory_resolver: "Optional[Callable[[], Callable[[Cascade, ScannerStore], Optional[DynamicScanner]]]]" = None,
+    scanner_interval_seconds: float = 3600.0,
 ):
-    """S2.8c Face 1:构造 FastAPI lifespan——startup 起探活循环,shutdown 停。
+    """S2.8c Face 1 + Phase B · B3.2:构造 FastAPI lifespan——startup 起探活循环 + 动态 Scanner
+    run_loop,shutdown 停。
 
-    抽成工厂(非模块级闭包)以便单测注入 tmp cascade/targets 确定性验证 task 生命周期
+    抽成工厂(非模块级闭包)以便单测注入 tmp cascade/targets/scanner 确定性验证 task 生命周期
     (不依赖 TestClient 是否跑 lifespan)。startup:init 共享 health_store + create_task
     prober.run_loop(stop)(on_alive=cascade.feed_probe_success 喂 HALF_OPEN,Face 3);
     **仅当有探活目标才起 task**(无真 key → 空转无意义)。shutdown:stop_event.set + cancel
     task + store.close。
+
+    Phase B · B3.2(动态 Scanner run_loop):scanner_factory_resolver 为 zero-arg callable,返回
+    factory ``(cascade, store) -> DynamicScanner | None``;返 None(无 key/禁用)→ 不起 scanner
+    task。startup:init ScannerStore → factory(cascade, store) → create_task(ds.run_loop(stop))。
+    shutdown:stop_event.set(共享,probe+scanner 同一 stop)+ await scanner task + store.close。
+    同 health-probe 模式(不 task.cancel,await 优雅退出)。scanner_interval_seconds 透传 run_loop interval。
 
     S1.0 修复(2026-06-19,caveat 2 闭合):接 callable resolver(或裸 cascade/list 兼容旧测试)
     替代闭包硬绑;production 仍传 ``lambda: _cascade`` 行为不变(每次 startup 解析当前 attr),
@@ -182,6 +255,21 @@ def _make_lifespan(
             task = asyncio.create_task(prober.run_loop(stop_event))
         app.state.probe_stop = stop_event
         app.state.probe_task = task
+        # Phase B · B3.2:动态 Scanner run_loop(tick → 面试入池 → on_tick_complete 重建候选池)。
+        scanner_task = None
+        scanner_store: Optional[ScannerStore] = None
+        if scanner_factory_resolver is not None:
+            factory = scanner_factory_resolver()
+            if factory is not None:
+                scanner_store = ScannerStore(_SCANNER_DB)
+                await scanner_store.init()
+                scanner = factory(cascade, scanner_store)
+                if scanner is not None:
+                    scanner_task = asyncio.create_task(
+                        scanner.run_loop(stop_event, interval=scanner_interval_seconds)
+                    )
+        app.state.scanner_task = scanner_task
+        app.state.scanner_store = scanner_store
         try:
             yield
         finally:
@@ -195,6 +283,15 @@ def _make_lifespan(
                     await task
                 except asyncio.CancelledError:
                     pass
+            if scanner_task is not None:
+                # 同 probe 优雅退出:stop_event 唤醒 run_loop sleep,await 等其退出。
+                # DynamicScanner.run_loop tick 异常自处理(不崩循环),await 不会抛。
+                try:
+                    await scanner_task
+                except asyncio.CancelledError:
+                    pass
+            if scanner_store is not None:
+                await scanner_store.close()
             if store is not None:
                 await store.close()
 
@@ -206,9 +303,11 @@ app = FastAPI(
     version="0.0.1",
     # S1.0 caveat 2 修复:传 callable 解析当前 module attr(每次 startup 解析),
     # 测试 monkeypatch.setattr(app_mod, "_cascade", tmp) 后 lifespan 跑用 tmp,不污染 production data。
+    # Phase B · B3.2:scanner_factory_resolver 传 _production_scanner_factory(无 key → 返 None 不起 task)。
     lifespan=_make_lifespan(
         lambda: _cascade,
         lambda: _probe_targets,
+        scanner_factory_resolver=lambda: _production_scanner_factory,
     ),
 )
 
@@ -368,12 +467,8 @@ def admin_rollback(req: _RollbackRequest, _admin: None = Depends(_admin_guard)) 
     # ③ 重新构造候选(同 _build_cascade 同形,Phase B 三层:静态真→动态→mock)
     manifest_entries = load_manifest()
     entries, candidates = _build_three_layer_candidates(pol, manifest_entries)
-    # ④ 同步刷新 strategy / cost_gate / enforcer(职责分离:各组件自己 refresh)
-    _cascade._strategy.refresh_entries(entries)  # type: ignore[union-attr]
-    _cascade._cost_gate.update_quotas({e.name: e.quota for e in entries.values()})  # type: ignore[union-attr]
-    _cascade._policy_enforcer.rebuild(entries.values())  # type: ignore[union-attr]
-    # ⑤ cascade apply(只管 CB + candidate 集合)
-    applied = _cascade.apply_policy(candidates, req.policy_version)
+    # ④+⑤ 同步刷新 strategy/cost_gate/enforcer + apply_policy(单一刷新源 _refresh_and_apply)
+    applied = _refresh_and_apply(_cascade, entries, candidates, req.policy_version)
     return {
         "applied": applied,
         "policy_version": req.policy_version,

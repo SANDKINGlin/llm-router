@@ -417,6 +417,137 @@ def test_dynamic_adapters_not_auto_wired():
     assert before == after  # production cascade 候选池未被改(routing-change-safety)
 
 
+# ── B3.1 · on_tick_complete 回调(Phase B 候选池重建触发)───────────────
+
+class TestOnTickComplete:
+    def test_callback_fires_when_changes(self, tmp_path):
+        """tick 有变更(added>0)→ 调 on_tick_complete,传 TickResult。"""
+        async def body():
+            store = ScannerStore(tmp_path / "scanner.db")
+            await store.init()
+            try:
+                calls = []
+
+                async def on_tick(result):
+                    calls.append(result)
+
+                ds = DynamicScanner(
+                    store,
+                    probe_factory=_probe_factory_passing(),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b")]),
+                    nvidia_key="k",
+                    openrouter_key="k",
+                    on_tick_complete=on_tick,
+                )
+                result = await ds.tick()
+                assert result.ok is True
+                assert len(calls) == 1
+                assert calls[0] is result  # 传同一个 TickResult
+            finally:
+                await store.close()
+        _run(body())
+
+    def test_callback_not_fired_when_no_changes(self, tmp_path):
+        """tick 无变更(added=0 expired=0)→ 不调 on_tick_complete。"""
+        async def body():
+            store = ScannerStore(tmp_path / "scanner.db")
+            await store.init()
+            try:
+                calls = []
+
+                async def on_tick(result):
+                    calls.append(result)
+
+                ds = DynamicScanner(
+                    store,
+                    probe_factory=_probe_factory_passing(),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b")]),
+                    nvidia_key="k",
+                    openrouter_key="k",
+                    on_tick_complete=on_tick,
+                )
+                await ds.tick()       # 首次:added=1 → 调一次
+                assert len(calls) == 1
+                await ds.tick()       # 二次:同快照 added=0 expired=0 → 不调
+                assert len(calls) == 1
+            finally:
+                await store.close()
+        _run(body())
+
+    def test_callback_exception_does_not_crash_tick(self, tmp_path):
+        """回调抛异常 → tick 不崩,仍返 TickResult(ok=True)。"""
+        async def body():
+            store = ScannerStore(tmp_path / "scanner.db")
+            await store.init()
+            try:
+                async def bad_on_tick(result):
+                    raise RuntimeError("rebuild failed")
+
+                ds = DynamicScanner(
+                    store,
+                    probe_factory=_probe_factory_passing(),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b")]),
+                    nvidia_key="k",
+                    openrouter_key="k",
+                    on_tick_complete=bad_on_tick,
+                )
+                result = await ds.tick()  # 不抛
+                assert result.ok is True  # tick 本身成功(回调异常不污染)
+                assert result.stats[ScannerSource.NVIDIA].added == 1
+            finally:
+                await store.close()
+        _run(body())
+
+    def test_no_callback_no_error(self, tmp_path):
+        """未注入 on_tick_complete(None)→ 正常 tick,无副作用。"""
+        async def body():
+            store = ScannerStore(tmp_path / "scanner.db")
+            await store.init()
+            try:
+                ds = DynamicScanner(
+                    store,
+                    probe_factory=_probe_factory_passing(),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b")]),
+                    nvidia_key="k",
+                    openrouter_key="k",
+                )
+                result = await ds.tick()
+                assert result.ok is True
+            finally:
+                await store.close()
+        _run(body())
+
+    def test_callback_fires_on_expire_only(self, tmp_path):
+        """第二次 tick 模型下架(removed→expired)→ 有变更 → 调回调。"""
+        async def body():
+            store = ScannerStore(tmp_path / "scanner.db")
+            await store.init()
+            try:
+                calls = []
+
+                async def on_tick(result):
+                    calls.append(result)
+
+                ds = DynamicScanner(
+                    store,
+                    probe_factory=_probe_factory_passing(),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b")]),
+                    nvidia_key="k",
+                    openrouter_key="k",
+                    on_tick_complete=on_tick,
+                )
+                await ds.tick()  # +a-70b
+                calls.clear()
+                # 模型下架:fetcher 返空
+                ds._fetcher = _fetcher_returning(nv_models=[])
+                await ds.tick()  # removed a-70b → expired=1 → 调回调
+                assert len(calls) == 1
+                assert calls[0].stats[ScannerSource.NVIDIA].expired == 1
+            finally:
+                await store.close()
+        _run(body())
+
+
 # ── B1.1/B1.2 · 动态条目造 ProviderEntry(Phase B)──────────────────────
 
 class TestDynamicEntryToProviderEntry:

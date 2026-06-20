@@ -169,3 +169,214 @@ def test_prober_on_alive_error_does_not_crash_loop(tmp_path):
             await health.close()
 
     _run(body())  # 不抛即过
+
+
+# ── Phase B · B3.2:DynamicScanner run_loop lifespan 接线 ───────────────────────
+
+
+class _RecordingScanner:
+    """Fake DynamicScanner:记录 run_loop 是否启动 + stop 优雅退出 + 注入 rebuild 回调。
+
+    不做真 tick(零网络);只验 lifespan 起 task / stop 退出 / rebuild 回调被接进 on_tick_complete。
+    """
+
+    def __init__(self, store, *, on_tick_complete=None, **_kw):
+        self.store = store
+        self.on_tick_complete = on_tick_complete
+        self.loop_started = False
+
+    async def run_loop(self, stop_event, *, interval=3600.0):
+        self.loop_started = True
+        # 若注入了 on_tick_complete,触发一次(模拟 tick 有变更 → 重建回调被调)
+        if self.on_tick_complete is not None:
+            try:
+                await self.on_tick_complete(None)
+            except Exception:
+                pass
+        await stop_event.wait()  # 优雅退出:stop_event.set 唤醒
+
+
+class _ApplyPolicySpy:
+    """包一层 cascade,记录 apply_policy 调用(验重建回调真调 apply_policy)。"""
+
+    def __init__(self, cascade):
+        self._cascade = cascade
+        self.applied = []
+
+    def __getattr__(self, name):
+        return getattr(self._cascade, name)
+
+    def apply_policy(self, candidates, version):
+        self.applied.append((tuple(n for n, _p, _k in candidates), version))
+        return self._cascade.apply_policy(candidates, version)
+
+
+def test_scanner_lifespan_starts_task_and_stops(tmp_path, monkeypatch):
+    """scanner_factory 返非 None → lifespan 起 scanner run_loop task;shutdown stop 优雅退出。"""
+    cascade, store, _health = _cascade_with_health(tmp_path)
+    monkeypatch.setattr("llm_router.app._SCANNER_DB", tmp_path / "scanner.db")
+
+    async def body():
+        lf = _make_lifespan(
+            cascade, [],
+            scanner_factory_resolver=lambda: lambda c, s: _RecordingScanner(s),
+            scanner_interval_seconds=0.01,
+        )
+        app = FastAPI(lifespan=lf)
+        try:
+            async with lf(app):
+                assert app.state.scanner_task is not None
+                assert not app.state.scanner_task.done()
+                assert app.state.scanner_store is not None
+            assert app.state.scanner_task.done()  # shutdown 后退出
+        finally:
+            await store.close()
+    _run(body())
+
+
+def test_scanner_lifespan_no_task_when_factory_returns_none(tmp_path, monkeypatch):
+    """scanner_factory 返 None(无 key/禁用)→ 不起 scanner task(无谓空转)。"""
+    cascade, store, _health = _cascade_with_health(tmp_path)
+    monkeypatch.setattr("llm_router.app._SCANNER_DB", tmp_path / "scanner.db")
+
+    async def body():
+        lf = _make_lifespan(
+            cascade, [],
+            scanner_factory_resolver=lambda: lambda c, s: None,
+        )
+        app = FastAPI(lifespan=lf)
+        try:
+            async with lf(app):
+                assert app.state.scanner_task is None
+        finally:
+            await store.close()
+    _run(body())
+
+
+def test_scanner_lifespan_no_task_when_resolver_none(tmp_path, monkeypatch):
+    """scanner_factory_resolver=None(默认)→ 不起 scanner task(向后兼容旧 lifespan)。"""
+    cascade, store, _health = _cascade_with_health(tmp_path)
+    monkeypatch.setattr("llm_router.app._SCANNER_DB", tmp_path / "scanner.db")
+
+    async def body():
+        lf = _make_lifespan(cascade, [])  # 不传 scanner_factory_resolver
+        app = FastAPI(lifespan=lf)
+        try:
+            async with lf(app):
+                assert app.state.scanner_task is None
+                assert app.state.scanner_store is None
+        finally:
+            await store.close()
+    _run(body())
+
+
+def _full_cascade_for_rebuild(tmp_path):
+    """建带 EpsilonGreedy + CostGate + PolicyEnforcer 的 Cascade(供重建回调测试,
+    这些组件的 refresh_entries/update_quotas/rebuild 是 _refresh_and_apply 的依赖)。"""
+    from llm_router.api.cascade import Cascade
+    from llm_router.api.cost_gate import CostGate
+    from llm_router.api.epsilon_greedy import EpsilonGreedy
+    from llm_router.api.policy_enforcer import PolicyEnforcer
+    from llm_router.config import ProviderEntry
+    from llm_router.providers.mock import MockProvider
+    from llm_router.resilience.circuit_breaker import CircuitBreaker
+    from llm_router.store.token_ledger import LedgerStore
+    from llm_router.store.trace import TraceStore
+
+    entries = {
+        "mock": ProviderEntry(name="mock", tier="fast", quota=1000000, cooldown_s=1,
+                              is_free=True, cost_multiplier=0.0),
+    }
+    ledger = LedgerStore(tmp_path / "ledger.db")
+    cost_gate = CostGate(ledger, {"mock": 1000000})
+    cascade = Cascade(
+        store=TraceStore(tmp_path / "trace.db"),
+        breaker=CircuitBreaker(tmp_path / "circuit.db"),
+        strategy=EpsilonGreedy(entries, chooser=lambda: 1.0),
+        candidates=[("mock", MockProvider(), "mock")],
+        policy_enforcer=PolicyEnforcer(entries.values()),
+        ledger=ledger,
+        cost_gate=cost_gate,
+    )
+    return cascade
+
+
+def test_rebuild_callback_calls_apply_policy(tmp_path, monkeypatch):
+    """on_tick_complete 重建回调:重读 active → apply_policy 被调(version=content-hash)。"""
+    from llm_router.app import _make_rebuild_callback
+    from llm_router.config import Policy, ProviderEntry
+    from llm_router.scanner.snapshot import DiscoveredModel, ScannerSource
+    from llm_router.store.scanner_store import ScannerStore
+
+    cascade = _full_cascade_for_rebuild(tmp_path)
+    scanner_db = tmp_path / "scanner.db"
+    monkeypatch.setattr("llm_router.app._SCANNER_DB", scanner_db)
+    monkeypatch.setattr(
+        "llm_router.app.policy",
+        lambda: Policy(
+            policy_version="t1", gray_percent=100,
+            providers=[ProviderEntry(name="mock", tier="fast", quota=1, cooldown_s=1,
+                                     is_free=True, cost_multiplier=0.0)],
+        ),
+    )
+
+    async def body():
+        sstore = ScannerStore(scanner_db)
+        await sstore.init()
+        try:
+            await sstore.upsert_entry(
+                DiscoveredModel(source=ScannerSource.NVIDIA, model_id="nvidia/a-70b", tier="strong"),
+                interview_passed=True,
+            )
+            spy = _ApplyPolicySpy(cascade)
+            rebuild = _make_rebuild_callback(spy, sstore)
+            await rebuild(None)
+            assert len(spy.applied) == 1
+            _names, version = spy.applied[0]
+            assert version.startswith("scan-")  # content-hash 版本
+            # mock 候选在(动态缺 key 不产候选,但 mock 兜底在)
+            assert "mock" in _names
+        finally:
+            await sstore.close()
+    _run(body())
+
+
+def test_rebuild_callback_idempotent_same_active_set(tmp_path, monkeypatch):
+    """同 active 集 → 同 version → 第二次 apply_policy noop(返 False)。"""
+    from llm_router.app import _make_rebuild_callback
+    from llm_router.config import Policy, ProviderEntry
+    from llm_router.scanner.snapshot import DiscoveredModel, ScannerSource
+    from llm_router.store.scanner_store import ScannerStore
+
+    cascade, store, _health = _cascade_with_health(tmp_path)
+    cascade = _full_cascade_for_rebuild(tmp_path)
+    scanner_db = tmp_path / "scanner.db"
+    monkeypatch.setattr("llm_router.app._SCANNER_DB", scanner_db)
+    monkeypatch.setattr(
+        "llm_router.app.policy",
+        lambda: Policy(
+            policy_version="t1", gray_percent=0,  # gray=0 → 无动态,纯 mock(确定性)
+            providers=[ProviderEntry(name="mock", tier="fast", quota=1, cooldown_s=1,
+                                     is_free=True, cost_multiplier=0.0)],
+        ),
+    )
+
+    async def body():
+        sstore = ScannerStore(scanner_db)
+        await sstore.init()
+        try:
+            await sstore.upsert_entry(
+                DiscoveredModel(source=ScannerSource.NVIDIA, model_id="nvidia/a-70b", tier="strong"),
+                interview_passed=True,
+            )
+            spy = _ApplyPolicySpy(cascade)
+            rebuild = _make_rebuild_callback(spy, sstore)
+            await rebuild(None)  # 首次:version "" → "scan-<active-hash>" → apply_policy True
+            first = spy.applied[-1]
+            assert first[1].startswith("scan-")
+            await rebuild(None)  # 二次:同 active 集 → 同 version → noop(apply_policy 返 False)
+            second = spy.applied[-1]
+            assert second == first  # 同 candidates + 同 version(幂等)
+        finally:
+            await sstore.close()
+    _run(body())

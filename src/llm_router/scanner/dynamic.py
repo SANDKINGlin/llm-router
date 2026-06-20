@@ -26,9 +26,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from ..providers.openai import OpenAIProvider
 from ..config import ProviderEntry
@@ -108,6 +109,64 @@ def build_dynamic_entries(models: list[DiscoveredModel]) -> list[ProviderEntry]:
     return entries
 
 
+def dynamic_policy_version(active_models: list[DiscoveredModel]) -> str:
+    """从 active 模型集算 policy_version(Phase B · B3.2,D3 决:content-hash 非 mtime)。
+
+    WAL 模式下 scanner.db 主文件 mtime 不稳定(写先进 WAL,主文件 mtime 延后 checkpoint),
+    故用 active model_id 集合的 sha1 短摘要做 version:
+      - 同 active 集 → 同 version → apply_policy noop(幂等,省一次候选池重建)
+      - active 集变化 → version 变 → apply_policy 原子替换候选池
+
+    空 active 集 → "scan-empty"(纯静态回退版本号)。
+    """
+    if not active_models:
+        return "scan-empty"
+    ids = sorted(m.model_id for m in active_models)
+    h = hashlib.sha1("|".join(ids).encode("utf-8")).hexdigest()[:12]
+    return f"scan-{h}"
+
+
+def make_openai_probe_factory(
+    *,
+    nvidia_key: Optional[str] = None,
+    openrouter_key: Optional[str] = None,
+    env: Optional[dict[str, str]] = None,
+) -> Callable[[DiscoveredModel], "ProbeFn"]:
+    """造生产 probe_factory:每模型用 OpenAIProvider 打其 source 端点冒烟(Phase B · D6)。
+
+    DynamicScanner 面试 added 模型时调此 factory(model) 产 probe;probe 打远端免费 provider
+    自身(零本地 ollama 模型,守 ollama-qwen3-rules)。key 从 env/参数读(同 build_dynamic_adapters)。
+    超时由 interview_model 的 wait_for(probe_timeout) 兜底,probe 自身不重复包。
+
+    缺 key 的 source → probe 用空 key,complete() 抛 ProviderError → 面试失败 → 不入池(无害)。
+    """
+    import os
+
+    environ = env if env is not None else os.environ
+    key_by_source = {
+        ScannerSource.NVIDIA: nvidia_key or environ.get("NVIDIA_API_KEY", ""),
+        ScannerSource.OPENROUTER: openrouter_key or environ.get("OPENROUTER_API_KEY", ""),
+    }
+
+    def factory(model: DiscoveredModel) -> "ProbeFn":
+        key = key_by_source.get(model.source, "")
+        base_url = _SOURCE_BASE_URL.get(model.source, "")
+        provider = OpenAIProvider(
+            f"probe-{model.source.value}-{model.model_id.replace('/', ':')}",
+            api_key=key,
+            base_url=base_url,
+            model=model.model_id,
+        )
+
+        async def probe(model_id: str) -> str:
+            text, _model, _usage = await provider.complete("ping")
+            return text
+
+        return probe
+
+    return factory
+
+
 @dataclass(frozen=True)
 class SourceTickStats:
     """单 source 单次 tick 的可观测统计(供日志/审计/测试断言)。"""
@@ -150,6 +209,7 @@ class DynamicScanner:
         nvidia_key: Optional[str] = None,
         openrouter_key: Optional[str] = None,
         probe_timeout: float = 20.0,
+        on_tick_complete: Optional[Callable[[TickResult], Awaitable[None]]] = None,
     ) -> None:
         self._store = store
         self._probe_factory = probe_factory
@@ -157,6 +217,9 @@ class DynamicScanner:
         self._nvidia_key = nvidia_key
         self._openrouter_key = openrouter_key
         self._probe_timeout = probe_timeout
+        # Phase B · B3.1:tick 有变更(added/expired>0)→ 调此回调(生产用 app 传 apply_policy 重建;
+        # 测试注入 fake)。无变更不调。回调异常不崩 tick(记 log,同 run_loop 健壮性纪律)。
+        self._on_tick_complete = on_tick_complete
 
     async def tick(self) -> TickResult:
         """单次轮询编排(可单测)。返回 TickResult(统计 + ok/error)。
@@ -177,7 +240,20 @@ class DynamicScanner:
         stats: dict[ScannerSource, SourceTickStats] = {}
         for source, curr in current.items():
             stats[source] = await self._tick_source(source, curr)
-        return TickResult(ok=True, stats=stats)
+        result = TickResult(ok=True, stats=stats)
+        # Phase B · B3.1:有变更(added 或 expired>0)→ 触发候选池重建回调。
+        # 无变更不调(apply_policy 同 version noop,省一次重建)。回调异常不崩 tick。
+        if self._on_tick_complete is not None and self._has_pool_changes(stats):
+            try:
+                await self._on_tick_complete(result)
+            except Exception as exc:
+                _LOG.error("on_tick_complete 回调异常(不崩 tick): %s", exc)
+        return result
+
+    @staticmethod
+    def _has_pool_changes(stats: dict[ScannerSource, SourceTickStats]) -> bool:
+        """是否有入池/清退变更(added 或 expired>0)。供 B3.1 判是否触发重建回调。"""
+        return any(s.added > 0 or s.expired > 0 for s in stats.values())
 
     async def _tick_source(self, source: ScannerSource, curr: Snapshot) -> SourceTickStats:
         """单 source 的 diff→面试→入库→清退。"""
