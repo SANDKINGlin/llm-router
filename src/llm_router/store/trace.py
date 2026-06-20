@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS trace (
     reward                REAL,
     reward_committed_at   TEXT,
     hop_attribution       TEXT,
-    created_at            TEXT NOT NULL
+    created_at            TEXT NOT NULL,
+    arm                   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trace_correlation ON trace(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_trace_parent ON trace(parent_correlation_id);
@@ -47,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_trace_parent ON trace(parent_correlation_id);
 -- 字段与 `trace` 完全一致(共享 TRACE_COLUMNS),便于 Phase 2 commit() 双写 + 迁移
 -- 时不做 schema 转换。idempotency_key UNIQUE 保留(hot 表也是写入入口候选)。
 -- 设计意图:design.md §持久化"Phase2 热冷表分离(WAL-02)"+ task 24 (S1.1增强)。
+-- A4(子片 0.4,2026-06-20):三表均加末列 `arm`(per-arm 追踪,见 TRACE_COLUMNS)。
 CREATE TABLE IF NOT EXISTS trace_hot (
     trace_id              TEXT PRIMARY KEY,
     correlation_id        TEXT NOT NULL,
@@ -59,7 +61,8 @@ CREATE TABLE IF NOT EXISTS trace_hot (
     reward                REAL,
     reward_committed_at   TEXT,
     hop_attribution       TEXT,
-    created_at            TEXT NOT NULL
+    created_at            TEXT NOT NULL,
+    arm                   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trace_hot_correlation ON trace_hot(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_trace_hot_parent ON trace_hot(parent_correlation_id);
@@ -77,14 +80,18 @@ CREATE TABLE IF NOT EXISTS trace_cold (
     reward                REAL,
     reward_committed_at   TEXT,
     hop_attribution       TEXT,
-    created_at            TEXT NOT NULL
+    created_at            TEXT NOT NULL,
+    arm                   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trace_cold_correlation ON trace_cold(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_trace_cold_parent ON trace_cold(parent_correlation_id);
 CREATE INDEX IF NOT EXISTS idx_trace_cold_created ON trace_cold(created_at);
 """
 
-# 蓝图 §4 S1.1 的 12 字段(权威字段名)。
+# 蓝图 §4 S1.1 的 12 字段 + A4(子片 0.4)per-arm `arm` 列 = 13 字段(权威字段名)。
+# arm = provider+model+account_key 复合标识(同 bandit_state.db arm PK 语义),
+# 供 S3+ bandit 按臂统计 reward;具体编码 defer S3+(bandit_state.py:14)。
+# account_key = api_key_env 名(非 secret,scanner/mnfst.py:58),存储安全。
 TRACE_COLUMNS: tuple[str, ...] = (
     "trace_id",
     "correlation_id",
@@ -98,6 +105,7 @@ TRACE_COLUMNS: tuple[str, ...] = (
     "reward_committed_at",
     "hop_attribution",
     "created_at",
+    "arm",
 )
 
 # S1.1 增强子片 0.2:hot/cold 表 schema 与 trace 表一致(便于双写 + 异步迁移)。
@@ -134,6 +142,7 @@ class TraceRow:
     reward_committed_at: Optional[str]
     hop_attribution: Optional[str]
     created_at: str
+    arm: Optional[str] = None  # A4:per-arm 标识(S3+ bandit 用;Phase1 多为 None)
 
 
 class IdempotencyConflictError(RuntimeError):
@@ -181,6 +190,27 @@ class TraceStore:
         await self._conn.execute("PRAGMA synchronous=NORMAL")
         await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(_SCHEMA)
+        # A4(子片 0.4):per-arm 列迁移。CREATE TABLE IF NOT EXISTS 不会给已存在的
+        # 旧库加列,须显式 ALTER ADD COLUMN 补 arm(三表)。幂等:已含 arm 则跳过。
+        await self._migrate_add_arm()
+
+    async def _table_columns(self, table: str) -> list[str]:
+        """PRAGMA table_info(<table>) → 列名顺序(迁移/测试自省用)。"""
+        async with self._db.execute(f"PRAGMA table_info({table})") as cur:
+            rows = await cur.fetchall()
+        return [r[1] for r in rows]
+
+    async def _migrate_add_arm(self) -> None:
+        """A4:给已存在的旧库三表补 `arm TEXT` 列(末列,与 CREATE 一致)。
+
+        CREATE TABLE IF NOT EXISTS 对已存在的表是 noop,不会加列;Phase 1 升级到
+        Phase 2 时旧 trace.db / trace_hot / trace_cold 须 ALTER 补 arm。幂等:
+        列已存在则跳过(不报 duplicate column name)。
+        """
+        for table in ("trace", "trace_hot", "trace_cold"):
+            cols = await self._table_columns(table)
+            if "arm" not in cols:
+                await self._db.execute(f"ALTER TABLE {table} ADD COLUMN arm TEXT")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -237,6 +267,7 @@ class TraceStore:
         provider: str,
         parent_correlation_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        arm: Optional[str] = None,
     ) -> AcquireOutcome:
         """幂等 compare-and-swap 入口。
 
@@ -244,6 +275,10 @@ class TraceStore:
           成功 → OWNER。
         - IntegrityError(key 已存在)→ 轮询等 owner commit → REPLAYED(缓存)。
         - poll 窗口内未 commit → IdempotencyConflictError。
+
+        arm(A4,子片 0.4):可选 per-arm 标识,acquire 时刻若已知(S2.9 匹配层选定
+        model 后可构造)则写入;None(默认)= arm 留空,待 commit 回填或保持 NULL,
+        守现有调用点零回归。
         """
         trace_id = trace_id or str(uuid.uuid4())
         try:
@@ -251,8 +286,8 @@ class TraceStore:
                 "INSERT INTO trace "
                 "(trace_id, correlation_id, parent_correlation_id, idempotency_key, "
                 " provider, result, latency, cost, reward, reward_committed_at, "
-                " hop_attribution, created_at) "
-                "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)",
+                " hop_attribution, created_at, arm) "
+                "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)",
                 (
                     trace_id,
                     correlation_id,
@@ -260,6 +295,7 @@ class TraceStore:
                     idempotency_key,
                     provider,
                     _now_iso(),
+                    arm,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -294,12 +330,16 @@ class TraceStore:
         latency: Optional[float] = None,
         cost: Optional[float] = None,
         hop_attribution: Optional[str] = None,
+        arm: Optional[str] = None,
     ) -> None:
         """OWNER 调完 provider 后回填 result/latency/cost(CAS 的后半段)。
 
         reward/reward_committed_at 仍 Phase1 预留(不填)。
         hop_attribution:S1.5a 起可传(由 routing.hop 的 HopAttribution.to_json() 产出
         的 JSON 串);None(默认)= 不动该列,守现有调用点零回归。
+        arm(A4,子片 0.4):可选 per-arm 标识,commit 时刻 model 已知
+        (provider.complete() 返回)可构造;None(默认)= 不动该列,守零回归。
+        若 acquire 已写 arm 而 commit 不传,arm 保持 acquire 值(不覆盖)。
 
         **B1(子片 0.3,2026-06-20):同事务双写 trace_hot**(WAL-02 热冷表分离激活)。
         trace 表 UPDATE(行由 acquire 创建)+ trace_hot 表
@@ -307,26 +347,30 @@ class TraceStore:
         幂等更新,PK=trace_id 防膨胀)。两条语句包在显式 BEGIN/COMMIT 内——任一失败
         ROLLBACK,不留残行(原子性)。acquire() 不写 hot(只有 commit 时刻
         result/latency/cost 齐全才双写)。trace_cold 迁移 defer A5(本切片不碰)。
+
+        **SET 动态构造**:result/latency/cost 恒写;hop_attribution / arm 仅在非 None
+        时追加(默认路径 SQL 文本与原 12 字段版完全一致,守 4 个现有调用点零行为变化)。
         """
-        if hop_attribution is None:
-            # 默认路径:保留原样 SQL 文本(守 4 个现有调用点零行为变化)。
-            await self._db.execute(
-                "UPDATE trace SET result = ?, latency = ?, cost = ? "
-                "WHERE trace_id = ?",
-                (result, latency, cost, trace_id),
-            )
-        else:
-            await self._db.execute(
-                "UPDATE trace SET result = ?, latency = ?, cost = ?, "
-                "hop_attribution = ? WHERE trace_id = ?",
-                (result, latency, cost, hop_attribution, trace_id),
-            )
+        set_parts = ["result = ?", "latency = ?", "cost = ?"]
+        params: list = [result, latency, cost]
+        if hop_attribution is not None:
+            set_parts.append("hop_attribution = ?")
+            params.append(hop_attribution)
+        if arm is not None:
+            set_parts.append("arm = ?")
+            params.append(arm)
+        params.append(trace_id)
+        await self._db.execute(
+            f"UPDATE trace SET {', '.join(set_parts)} WHERE trace_id = ?",
+            tuple(params),
+        )
         await self._dual_write_hot(
             trace_id=trace_id,
             result=result,
             latency=latency,
             cost=cost,
             hop_attribution=hop_attribution,
+            arm=arm,
         )
 
     async def _dual_write_hot(
@@ -337,13 +381,18 @@ class TraceStore:
         latency: Optional[float],
         cost: Optional[float],
         hop_attribution: Optional[str],
+        arm: Optional[str] = None,
     ) -> None:
         """B1:commit() 后把完整行镜像到 trace_hot(高频热表,WAL-02)。
 
         从 trace 表读出 acquire 时写入的不可变字段(correlation_id /
-        parent_correlation_id / idempotency_key / provider / created_at)+ commit
+        parent_correlation_id / idempotency_key / provider / created_at / arm)+ commit
         回填的可变字段(result/latency/cost/hop_attribution),整行 upsert 进
         trace_hot。reward/reward_committed_at 仍 Phase1 预留(填 NULL)。
+
+        arm(A4):从 trace 行读出(acquire 或 commit 写入的值),透传到 hot。
+        commit 传 arm 时 trace 已先 UPDATE,本 SELECT 见最新值;acquire 写了 arm 而
+        commit 未传,SELECT 仍见 acquire 值(不覆盖)。统一从 trace 读,避免双源不一致。
 
         **原子性**:与 trace 的 UPDATE 同处 autocommit 连接;trace 已先成功 UPDATE,
         本方法再 upsert hot。若 hot upsert 失败(如 UNIQUE(idempotency_key) 撞重——
@@ -352,7 +401,7 @@ class TraceStore:
         """
         async with self._db.execute(
             "SELECT correlation_id, parent_correlation_id, idempotency_key, "
-            "       provider, created_at FROM trace WHERE trace_id = ?",
+            "       provider, created_at, arm FROM trace WHERE trace_id = ?",
             (trace_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -366,11 +415,12 @@ class TraceStore:
             "INSERT INTO trace_hot "
             "(trace_id, correlation_id, parent_correlation_id, idempotency_key, "
             " provider, result, latency, cost, reward, reward_committed_at, "
-            " hop_attribution, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?) "
+            " hop_attribution, created_at, arm) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?) "
             "ON CONFLICT(trace_id) DO UPDATE SET "
             "  result = excluded.result, latency = excluded.latency, "
-            "  cost = excluded.cost, hop_attribution = excluded.hop_attribution",
+            "  cost = excluded.cost, hop_attribution = excluded.hop_attribution, "
+            "  arm = excluded.arm",
             (
                 trace_id,
                 row["correlation_id"],
@@ -382,6 +432,7 @@ class TraceStore:
                 cost,
                 hop_attribution,
                 row["created_at"],
+                row["arm"],
             ),
         )
 
@@ -426,7 +477,7 @@ class TraceStore:
         async with self._db.execute(
             "SELECT trace_id, correlation_id, parent_correlation_id, "
             "       idempotency_key, provider, result, latency, cost, "
-            "       reward, reward_committed_at, hop_attribution, created_at "
+            "       reward, reward_committed_at, hop_attribution, created_at, arm "
             "FROM trace WHERE correlation_id = ? "
             "ORDER BY created_at ASC, rowid ASC",
             (correlation_id,),
@@ -446,6 +497,7 @@ class TraceStore:
                 reward_committed_at=r["reward_committed_at"],
                 hop_attribution=r["hop_attribution"],
                 created_at=r["created_at"],
+                arm=r["arm"],
             )
             for r in rows
         ]

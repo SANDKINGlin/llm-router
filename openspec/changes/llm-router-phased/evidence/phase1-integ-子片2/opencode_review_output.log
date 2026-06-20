@@ -1,0 +1,161 @@
+[0m
+> build · deepseek-v4-pro
+[0m
+# OpenCode 异构对抗审 — 子片 2
+
+## 维度 1:覆盖度
+
+**[CHALLENGE] MEDIUM tests/integration/test_phase1_happy_path.py:155-175** `test_anthropic_endpoint_e2e_happy_path_writes_trace` 未校验 `hop_attribution`,与 OpenAI 对应测试 `test_openai_endpoint_e2e_happy_path_writes_trace:125-145` 不对称。如果 cascade.py 的 Anthropic 路径写错了归因(如 `reason="initial"` 写成 `"unknown"`),本测试会假绿通过。
+
+**可执行反例**:把 `cascade.py` 中 Anthropic 消息端点调用的 `_cascade.run()` 改为传入错误的 correlation_id 格式,导致 trace 写入异常但 `rows[0]["provider"] == "stubB"` 断言仍通过(因为不检查 attribution)。
+
+**[CHALLENGE] MEDIUM tests/integration/test_phase1_happy_path.py:86-90** `_extract_prompt` 完全未被测试。`_StubProvider.complete` 忽略 `prompt` 参数直接返回固定文本,因此即使 `_extract_prompt` 把 `messages` 解析成空字符串或错误格式,所有 10 个测试全部假绿。
+
+**可执行反例**:把 `app.py:_extract_prompt` 改成 `return ""`(永远返空串),所有 10 个测试仍然全绿——因为 `_StubProvider` 不消费 prompt。
+
+**[CHALLENGE] MEDIUM** 缺失失败路径覆盖:所有 10 个测试只覆盖 `cascade.run()` 返回 `success=True` 的路径。端点 handler 对 `result.final_text` 做 `or ""`,当 cascade 返回 `CascadeResult(None, None, False, ...)` 时,响应 body 为 `"content": ""` 且 HTTP 200——这是**静默失败**(应返回 4xx/5xx 但实际返 200)。无任何测试覆盖:
+- 合规门阻断(`compliance_blocked`)
+- 无可用候选(`no_candidates`)
+- 全部 provider 失败(budget 耗尽 / 全部 SOFT_CONTENT / 全部 hard_failure)
+
+**可执行反例**:把 `PolicyEnforcer.check()` 改成永远抛 `ComplianceError`,所有 10 个测试仍然全绿——因为端点不检查 `result.success`,静默返回 HTTP 200 + 空 content。
+
+**[CONSENSUS]** 交班要求的 10 个场景(双协议 happy path ×2 / SOFT_CONTENT 切换 / session_id 派生 ×3 / ledger 写入 ×2 / 多请求隔离 / 双协议共享)均有对应测试,数量上满足。
+
+---
+
+## 维度 2:模块级 _cascade monkeypatch 是否真生效
+
+**[CONSENSUS]** monkeypatch 机制本身正确。Python 模块级函数在调用时通过 `__dict__` 查找全局变量,`monkeypatch.setattr(app_mod, "_cascade", cascade)` 等价于 `app_mod._cascade = cascade`,endpoint handler 中 `await _cascade.run(...)` 会在调用时解析到 patched 值。
+
+**[CHALLENGE] LOW tests/integration/test_phase1_happy_path.py:98-102** `patched_app` fixture 每次测试内部执行 `from llm_router import app as app_mod`,这会触发 `app.py` 模块级 `_cascade = _build_cascade()` 执行——即**每次测试导入时都会创建真实 production cascade**(含 `data/` 目录下的真实 DB 连接)。虽然 patched 后不使用,但 `_build_cascade()` 中的 `LedgerStore(_DATA_DIR / "ledger.db")` 等构造器若在 `__init__` 中有副作用(如创建文件、打开连接),会污染工作目录。
+
+**[DEADLOCK]** 无法确认 `LedgerStore`/`TraceStore`/`CircuitBreaker`/`HealthStore` 的 `__init__` 是否有副作用——源码未嵌入。若这些构造器在 `__init__` 中即连接 SQLite(而非 lazy),则每次导入 `app` 模块都会在 `data/` 下创建/修改文件。
+
+**[CHALLENGE] MEDIUM** 验证 patched cascade 真被使用的唯一证据是 `counter == {"stubA": 1}`。若 production cascade 恰好包含同名 provider(低概率但非零),计数器断言仍通过,无法区分 patched vs production cascade。
+
+**可执行反例**:在 `app.py` 的 `_build_cascade()` 中手动添加一个名为 `"stubA"` 的 mock provider,`test_openai_endpoint_e2e_happy_path_writes_trace` 的 `counter` 断言仍通过(两个 cascade 都有 stubA),无法证明走的是 patched cascade。
+
+---
+
+## 维度 3:TestClient/lifespan 假设
+
+**[CHALLENGE] HIGH tests/integration/test_phase1_happy_path.py:16-18** 注释声明 "TestClient 不 with → lifespan 不触发,production data/*.db 不污染"。该假设依赖 Starlette 实现细节,非契约保证。
+
+**可执行反例(两步)**:
+1. Starlette 未来版本若改为 `TestClient(app)` 默认触发 lifespan(如某些 async test client 实现):
+   - lifespan 触发 → `_make_lifespan(_cascade, _probe_targets)` 执行,但此处的 `_cascade` 是 **app 创建时捕获的原始 production cascade**(非 patched)
+   - `health_store.init()` 在 `data/health.db` 创建/写入
+   - health prober 对真实 provider 发起探测请求
+2. **所有 10 个测试仍然全绿**——因为:
+   - 测试请求走的是 patched `_cascade`(endpoint handler 通过模块 globals 解析)
+   - lifespan 后台任务不影响请求-响应断言
+   - trace/ledger 断言读的是 `tmp_path` 下的隔离 DB,不是 `data/` 下的 production DB
+   - 唯一后果是静默污染 `data/*.db`,测试无感知
+
+**[CHALLENGE] MEDIUM** 即使 lifespan 不触发,`app` 对象创建时 `_make_lifespan(_cascade, _probe_targets)` 已捕获原始 `_cascade` 引用。若未来代码在 endpoint handler 外通过 `app.state` 或其他路径访问该引用,会出现 patched cascade 与原始 cascade 混用。
+
+---
+
+## 维度 4:SOFT_CONTENT 反例
+
+**[CHALLENGE] MEDIUM tests/integration/test_phase1_happy_path.py:177-215** `test_soft_content_falls_back_to_next_provider_with_correct_hop_chain` 对 SOFT_CONTENT 主路径覆盖较好,但存在盲区:
+
+**反例 A — `_record_usage` 顺序变更**:把 `cascade.py` 中 `await self._record_usage(name, model, usage)` 从 `is_complete` 检查**之前**移到**之后**(即 SOFT_CONTENT 跳不再记账):
+
+```python
+# 原:先记账再判完整性
+await self._record_usage(name, model, usage)
+if not is_complete(text, model):
+    ...
+
+# 改为:先判完整性再记账
+if not is_complete(text, model):
+    self._breaker.record_failure(...)
+    ...
+    continue  # ← _record_usage 永远不会被调用
+await self._record_usage(name, model, usage)
+```
+
+**测试应败但会绿**:因为 `_SoftProvider` 返回 `usage=None`,`_record_usage` 对 `None` 是 no-op,无论调不调用 ledger 都为空。测试的 `counter` 和 trace 断言不受影响,全部通过。
+
+**反例 B — `is_complete` 放宽空字符串检查**:把 `content_integrity.py:is_complete` 的 `text.strip() != ""` 改为 `text is not None`:
+
+```python
+# 原
+return text.strip() != "" and model.strip() != ""
+
+# 改为
+return text is not None and model is not None
+```
+
+**测试应败但会绿?** 不会——此改动会使 `is_complete("", "soft-model")` 返回 `True`,cascade 将 soft 当作成功返回,`body["choices"][0]["message"]["content"]` 为 `""`(因为 `result.final_text or ""`),断言 `== "recovered-text"` 失败。**此反例会被抓到,测试有效。**
+
+**[CONSENSUS]** 对 `is_complete` 本身的篡改能被 `test_soft_content` 捕获;但对 `_record_usage` 顺序、breaker 记录时机等副作用变更存在盲区。
+
+---
+
+## 维度 5:session_id 派生反例
+
+**[CHALLENGE] MEDIUM tests/integration/test_phase1_happy_path.py:230-243** `test_session_id_explicit_x_session_id_header_takes_priority` 无法区分优先级在 `_extract_session_id` 层实现还是在 `derive_session_id` 层实现。
+
+**可执行反例**:把 `app.py:_extract_session_id` 的优先级反转(Bearer 优先于 X-Session-Id):
+
+```python
+# 原:先取 explicit,再取 Bearer
+explicit = request.headers.get("x-session-id") or None
+...
+return derive_session_id(api_key, explicit)
+
+# 改为:先取 Bearer,忽略 explicit
+explicit = request.headers.get("x-session-id") or None
+...
+return derive_session_id(api_key, None)  # ← explicit 被丢弃
+```
+
+**测试应败但会绿**:因为 `derive_session_id(api_key, None)` 在 `api_key` 为 `"should-be-ignored"` 时返回 `blake2b("should-be-ignored")`,而测试期望 `["explicit-session-42"]`。等等——这**会被抓到**,因为 `derive_session_id("should-be-ignored", None)` ≠ `"explicit-session-42"`。
+
+重新分析:真正会假绿的场景是 `_extract_session_id` 同时传了两个参数给 `derive_session_id`,而 `derive_session_id` 内部做了正确的优先级:
+
+```python
+# _extract_session_id 改为同时传两个(不区分优先级)
+return derive_session_id(api_key, explicit)  # 两个都传
+
+# derive_session_id 内部:
+if explicit:
+    return explicit  # 优先级在这里生效
+```
+
+**测试会绿**(因为最终结果仍是 `"explicit-session-42"`),但无法区分优先级逻辑在哪个函数中实现。这是**架构层面的假绿**——如果未来有人重构把 `derive_session_id` 的优先级逻辑移除(认为 `_extract_session_id` 已处理),测试不会报警。
+
+**[CHALLENGE] LOW tests/integration/test_phase1_happy_path.py:245-255** `test_session_id_derived_from_bearer_token_when_no_explicit` 中 `Authorization: Bearer my-api-key` 的 token 不含空格。若 `_extract_session_id` 的 `auth.split(None, 1)` 被错误改为 `auth.split()`(split on all whitespace),对无空格 token 仍正确,但对含空格 token(如 JWT `eyJ.eyJ.sig`)会截断——测试假绿。
+
+**可执行反例**:把 `app.py` 的 `parts = auth.split(None, 1)` 改为 `parts = auth.split()`,然后用 `Authorization: Bearer eyJhbG.eyJhbG.sig`(JWT 格式,含 `.` 不含空格)测试——当前测试用 `my-api-key` 不含空格,split 行为一致,假绿。
+
+**[CONSENSUS]** `_RecordingStrategy.captured` 在 `plan()` 中通过 `context.get("session_id")` 填充,`cascade.run()` 将 endpoint 传入的 `session_id` 放入 context。链路完整,`captured` 确实反映 cascade 收到的值。
+
+---
+
+## 自由发掘(其他维度)
+
+**[CHALLENGE] MEDIUM tests/integration/test_phase1_happy_path.py:155-175** Anthropic 端点测试未验证 `body["id"]`、`body["usage"]` 字段存在性与格式。若响应塑形代码错误(如 `id` 字段缺失),测试假绿。
+
+**可执行反例**:把 `app.py` Anthropic 端点的 `"id": "msg_mock"` 删除,`test_anthropic_endpoint_e2e_happy_path_writes_trace` 仍然全绿(不检查 `id` 字段)。
+
+**[CHALLENGE] LOW tests/integration/test_phase1_happy_path.py:125-145** OpenAI 端点测试同样未验证 `body["id"]`、`body["usage"]`、`body["created"]` 字段。
+
+**[CHALLENGE] LOW tests/integration/test_phase1_happy_path.py:287-310** `test_openai_and_anthropic_share_cascade_each_writes_own_trace` 仅验证 trace 数量与 provider,未验证 Anthropic 响应的完整结构(如 `type`/`role`/`stop_reason`),与独立 Anthropic 测试覆盖不对称。
+
+**[CHALLENGE] LOW** `_FixedOrderStrategy` 和 `_RecordingStrategy` 的 `plan()` 对 `candidates` 做 `list()` 转 set 再过滤,若 `candidates` 中有重复项会被去重——但测试中 candidates 无重复,此行为未被覆盖。
+
+**[DEADLOCK]** `_build_cascade()` 中 `build_adapters(manifest_entries)` 和 `policy()` 的副作用未知——若这些函数在导入时读取配置文件/环境变量/网络请求,则 `from llm_router import app` 本身就可能失败或产生副作用。源码未嵌入,无法评估。
+
+**[CONSENSUS]** trace schema 校验(通过 `parse_attribution` + 字段断言)在 OpenAI 测试和 SOFT_CONTENT 测试中做得较好;ledger schema 校验(字段级断言)在 `test_ledger_records_when_provider_returns_usage` 中覆盖完整。
+
+---
+
+**[CHALLENGE] 子片 2 测试存在 7 项 CRITICAL/HIGH/MEDIUM,需修复后重审**
+
+具体:
+- **HIGH ×1**: TestClient lifespan 假设依赖实现细节,未来 Starlette 变更会导致静默污染 production data 且测试假绿
+- **MEDIUM ×6**: `_extract_prompt` 完全未测试(所有测试假绿)、缺失失败路径覆盖(端点静默返 200)、Anthropic trace 不检查 hop_attribution、`_record_usage` 顺序盲区、session_id 优先级分层无法区分、Anthropic 响应字段不完整

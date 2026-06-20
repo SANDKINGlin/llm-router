@@ -1,0 +1,16 @@
+[0m
+> build · deepseek-v4-pro
+[0m
+[0m→ [0mRead tests/integration/test_phase1_critical_bugs.py
+[0m✗ [0mRead llm_router/api/cascade.py failed
+[91m[1mError: [0mFile not found: /home/lin/projects/llm-router/llm_router/api/cascade.py
+[0m✗ [0mRead llm_router/routing/hop.py failed
+[91m[1mError: [0mFile not found: /home/lin/projects/llm-router/llm_router/routing/hop.py
+[0m✱ [0mGlob "**/cascade.py"[90m 1 match[0m
+[0m✱ [0mGlob "**/hop.py"[90m 1 match[0m
+[0m→ [0mRead src/llm_router/api/cascade.py
+[0m→ [0mRead src/llm_router/routing/hop.py
+[0m→ [0mRead src/llm_router/api/cost_gate.py
+[0m✱ [0mGlob "**/circuit_breaker.py"[90m 1 match[0m
+[0m→ [0mRead src/llm_router/api/policy_enforcer.py
+[0m→ [0mRead src/llm_router/resilience/circuit_breaker.py[90m [limit=60][0m

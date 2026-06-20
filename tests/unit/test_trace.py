@@ -18,7 +18,7 @@ import asyncio
 
 from llm_router.store.trace import AcquireStatus, TraceStore
 
-# 蓝图 §4 S1.1 的 12 字段(权威字段名,类型由实施定)。
+# 蓝图 §4 S1.1 的 12 字段 + A4(子片 0.4)per-arm `arm` 列 = 13 字段(权威字段名)。
 EXPECTED_COLUMNS = {
     "trace_id",
     "correlation_id",
@@ -32,6 +32,7 @@ EXPECTED_COLUMNS = {
     "reward_committed_at",
     "hop_attribution",
     "created_at",
+    "arm",
 }
 
 
@@ -416,3 +417,208 @@ def test_execute_idempotent_dual_writes_hot(tmp_path):
         hot_result = conn.execute("SELECT result FROM trace_hot").fetchone()[0]
     assert hot_n == 1
     assert hot_result == "exec-result"
+
+
+# ── S1.1 增强子片 0.4(2026-06-20,A4):per-arm trace 列扩展 ──────────────
+# arm = provider+model+account_key 复合标识(同 bandit_state.db arm PK 语义),
+# 供 S3+ bandit 按臂统计 reward。本切片只做 schema 演化 + 读写管线
+# (列预留 + acquire/commit/TraceRow/get_chain/双写透传 arm);arm 的具体编码与
+# reward 归因 defer S3+(bandit_state.py:14「具体编码 S3+ 决,留 TEXT 灵活」)。
+# account_key = api_key_env 名(非 secret 本身,scanner/mnfst.py:58),存储安全。
+
+
+def test_arm_column_present_in_all_three_tables(tmp_path):
+    """A4 schema:trace / trace_hot / trace_cold 三表均有 `arm TEXT` 列(末列)。"""
+    import sqlite3
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            for tbl in ("trace", "trace_hot", "trace_cold"):
+                cols = await store._table_columns(tbl)
+                assert "arm" in cols, f"{tbl} 缺 arm 列;实际 {cols}"
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        for tbl in ("trace", "trace_hot", "trace_cold"):
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+            assert cols[-1] == "arm", (
+                f"{tbl} 的 arm 应为末列(ALTER ADD COLUMN 追加语义,迁移一致);"
+                f"实际末列 {cols[-1]!r},全列 {cols}"
+            )
+
+
+def test_arm_migration_adds_column_to_existing_db(tmp_path):
+    """A4 迁移:已存在的旧库(无 arm 列)经 init() 后三表均补 arm 列,幂等。
+
+    CREATE TABLE IF NOT EXISTS 不会给已存在的表加列;init() 须显式 ALTER ADD
+    COLUMN 补 arm。再次 init() 不报错(幂等:duplicate column name 静默跳过)。
+    """
+    import sqlite3
+
+    db = tmp_path / "trace.db"
+    # 旧 schema(无 arm):手工建三表,模拟 Phase 1 升级前库存。
+    old_cols = (
+        "trace_id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL, "
+        "parent_correlation_id TEXT, idempotency_key TEXT NOT NULL UNIQUE, "
+        "provider TEXT NOT NULL, result TEXT, latency REAL, cost REAL, "
+        "reward REAL, reward_committed_at TEXT, hop_attribution TEXT, "
+        "created_at TEXT NOT NULL"
+    )
+    with sqlite3.connect(db) as conn:
+        for tbl in ("trace", "trace_hot", "trace_cold"):
+            conn.execute(f"CREATE TABLE {tbl} ({old_cols})")
+
+    async def body():
+        store = TraceStore(db)
+        await store.init()
+        try:
+            pass
+        finally:
+            await store.close()
+        # 幂等:再 init 一次不报错。
+        store2 = TraceStore(db)
+        await store2.init()
+        await store2.close()
+
+    _run(body())
+
+    with sqlite3.connect(db) as conn:
+        for tbl in ("trace", "trace_hot", "trace_cold"):
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+            assert "arm" in cols, f"迁移后 {tbl} 应有 arm 列;实际 {cols}"
+
+
+def test_acquire_writes_arm_into_trace(tmp_path):
+    """A4:acquire(arm=...) 把 arm 写进 trace 行(acquire 时刻已知 arm 的路径)。
+
+    acquire 后 trace_hot 仍空(只有 commit 双写),与 B1 一致。
+    """
+    import sqlite3
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            o = await store.acquire(
+                correlation_id="cid-arm-acq",
+                idempotency_key="idem-arm-acq",
+                provider="p-arm",
+                arm="p-arm/m-arm/k-arm",
+            )
+            assert o.status == AcquireStatus.OWNER
+            async with store._db.execute("SELECT arm FROM trace WHERE trace_id=?",
+                                         (o.trace_id,)) as cur:
+                assert (await cur.fetchone())[0] == "p-arm/m-arm/k-arm"
+            async with store._db.execute("SELECT COUNT(*) FROM trace_hot") as cur:
+                assert (await cur.fetchone())[0] == 0, "acquire 不应写 hot"
+        finally:
+            await store.close()
+
+    _run(body())
+    # 重新连直查确认落盘
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        assert conn.execute("SELECT arm FROM trace").fetchone()[0] == "p-arm/m-arm/k-arm"
+
+
+def test_commit_arm_flows_to_trace_and_hot(tmp_path):
+    """A4:commit(arm=...) 回填 trace.arm 并经 _dual_write_hot 透传到 trace_hot。
+
+    commit 时刻 model 已知(provider.complete() 返回),arm 在此构造并落库。
+    逐列比对 trace 与 trace_hot 的 arm 一致(守 B1 双写一致性)。
+    """
+    import sqlite3
+
+    from llm_router.store.trace import TRACE_COLUMNS
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            o = await store.acquire(
+                correlation_id="cid-arm-commit",
+                idempotency_key="idem-arm-commit",
+                provider="p-arm2",
+            )
+            await store.commit(
+                trace_id=o.trace_id,
+                result="r-arm",
+                latency=9.0,
+                cost=0.01,
+                arm="p-arm2/m-arm2/k-arm2",
+            )
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        trace_arm = conn.execute("SELECT arm FROM trace").fetchone()[0]
+        hot_arm = conn.execute("SELECT arm FROM trace_hot").fetchone()[0]
+        assert trace_arm == "p-arm2/m-arm2/k-arm2"
+        assert hot_arm == "p-arm2/m-arm2/k-arm2", (
+            f"trace_hot 应透传 arm(B1 双写 + A4 透传);实际 {hot_arm!r}"
+        )
+        # 完整逐列一致性(TRACE_COLUMNS 含 arm,B1 契约扩展)
+        trace_row = dict(zip(
+            [r[1] for r in conn.execute("PRAGMA table_info(trace)")],
+            conn.execute("SELECT * FROM trace").fetchone(),
+        ))
+        hot_row = dict(zip(
+            [r[1] for r in conn.execute("PRAGMA table_info(trace_hot)")],
+            conn.execute("SELECT * FROM trace_hot").fetchone(),
+        ))
+        for col in TRACE_COLUMNS:
+            assert trace_row[col] == hot_row[col], (
+                f"列 {col} 不一致: trace={trace_row[col]!r} hot={hot_row[col]!r}"
+            )
+
+
+def test_commit_without_arm_zero_regression(tmp_path):
+    """A4 零回归:不传 arm → trace/trace_hot 的 arm 均为 NULL(现有调用点不变)。"""
+    import sqlite3
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            o = await store.acquire(
+                correlation_id="cid-noarm",
+                idempotency_key="idem-noarm",
+                provider="p-noarm",
+            )
+            await store.commit(trace_id=o.trace_id, result="r-noarm")
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        assert conn.execute("SELECT arm FROM trace").fetchone()[0] is None
+        assert conn.execute("SELECT arm FROM trace_hot").fetchone()[0] is None
+
+
+def test_get_chain_returns_arm(tmp_path):
+    """A4:get_chain() 返回的 TraceRow 携带 arm 字段。"""
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            o = await store.acquire(
+                correlation_id="cid-chain",
+                idempotency_key="idem-chain",
+                provider="p-chain",
+                arm="p-chain/m-chain/k-chain",
+            )
+            await store.commit(trace_id=o.trace_id, result="r-chain")
+            chain = await store.get_chain("cid-chain")
+            assert len(chain) == 1
+            assert chain[0].arm == "p-chain/m-chain/k-chain"
+        finally:
+            await store.close()
+
+    _run(body())

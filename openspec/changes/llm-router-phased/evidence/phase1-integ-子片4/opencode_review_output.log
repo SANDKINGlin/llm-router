@@ -1,0 +1,77 @@
+[0m
+> build · deepseek-v4-pro
+[0m
+# OpenCode 异构对抗审 — 子片 4
+
+## 维度 1:A1 防雪崩反例
+
+[CONSENSUS] `counter['bad'] == 3` 能抓"`if not dec.allowed` 改成 `if False`"的反例。若绕过 breaker 判定,`_StubHardFail.complete()` 每请求都调,`counter['bad']` 会到 30,断言 `== 3` 立败。同理,若 `allow_request` 恒返 `Decision(True,"")`,counter 也会到 30。counter 三层(complete 内自增 + breaker 状态 + spy)对"每请求遍历全 N 个 provider 不查 breaker"的雪崩模式有效覆盖。
+
+但有一处盲区:测试未验证 `good` provider 在 30 请求后仍 CLOSED。若未来 bug 导致 bad 的 failure 被错误归因到 good(如 cascade 内 `record_failure` 传错 provider name),good 也会被 trip,但 counter 只看调用次数看不出来。不过当前 cascade.run 的 `record_failure(name, key, ...)` 用 `name` 来自 `chain` 迭代变量,与 `provider.complete` 的实例一致,归因正确。此项为 LOW 残余风险。
+
+## 维度 2:A2 时钟注入正确性
+
+[CHALLENGE] MED `tests/integration/test_phase1_load_and_recovery.py:238-270` A2.1/A2.2 无法检测 `allow_request` 内直接调用 `time.time()` 的回归。
+
+**反例**:将 `circuit_breaker.py` 的 `allow_request` 中 `now = self._now()` 改为 `now = time.time()`,则:
+- A2.1(`test_breaker_half_open_probe_recovers_to_closed`):`_now_override=31.0`,但 `allow_request` 内 `now = time.time()` 取真实时间(远大于 30.0),`now >= ks.next_probe_at` 仍为 True,探测仍放行,断言全绿。**漏检**。
+- A2.2(`test_breaker_half_open_probe_failure_extends_window`):同上,`allow_request` 放行不受影响;但 `record_failure` 内若也用 `time.time()`,`next_probe_at` 会变成 `real_time + 60`,断言 `pytest.approx(91.0)` 会败——**部分抓**(只抓 `record_failure` 侧,不抓 `allow_request` 侧)。
+
+**A2.3 能补这个洞**:`test_cascade_routes_through_half_open_probe_recovers` 在 r4 时 `_now_override` 仍为 0.0,若 `allow_request` 用 `time.time()`,真实时间 > 30.0,探测提前放行,r4 会 success(但断言 `r4.success is False`),立败。所以 A2.3 的"cooldown 内拒绝 → cooldown 后放行"两段式覆盖了 A2.1/A2.2 的盲区。**但 A2.1/A2.2 作为单元测试,单独跑时存在此盲区**。
+
+## 维度 3:A2 cascade 集成 final_text 断言
+
+[CONSENSUS] `r5.final_text == "recovered-4"` 断言健壮。`_ToggleProvider` 实例在 `_make_cascade` 时传入,存入 `cascade._providers`,跨请求复用同一实例,`_calls` 正确累积到 4。若未来 cascade 改为每请求新建 provider 实例,`_calls` 重置,返回值变成 `"recovered-1"`,断言立败。断言与内部计数器耦合是刻意的——它验证了"同一 provider 实例跨请求状态持续"这一 cascade 契约。
+
+## 维度 4:A3 production data 监测路径硬编码
+
+[CHALLENGE] CRITICAL `tests/integration/test_phase1_load_and_recovery.py:353-361` `_data_dir_mtime_snapshot()` 硬编码 `/home/lin/projects/llm-router/data`,跨环境失效且 CI 假绿。
+
+**反例 1(CI 假绿)**:在 CI 环境中 `data/` 目录不存在(未提交到 git),`data_dir.glob("*.db")` 返空,`snap = {}`。`before = {}`, `after = {}`。后续循环:
+```python
+for db_name in ("trace.db", "ledger.db", "circuit.db"):
+    if db_name in before and db_name in after:  # 永远 False
+        assert ...
+```
+所有断言被跳过,测试**无任何验证却绿**。此时即使 lifespan 疯狂写 production data,测试也抓不到。
+
+**反例 2(跨开发机)**:路径 `/home/lin/...` 含用户名,换机器直接 `FileNotFoundError` 或读到错误目录。
+
+**修复方向**:应使用 `tmp_path` 或项目相对路径(`Path(__file__).resolve().parents[2] / "data"`,与 `app.py` 的 `_DATA_DIR` 一致)。
+
+## 维度 5:A3 lifespan 闭包绑定
+
+[CHALLENGE] HIGH `tests/integration/test_phase1_load_and_recovery.py:392-434` 测试名声称 `does_not_pollute_production_data`,但实际**生产 `health.db` 已被污染**,测试刻意排除对 `health.db` 的 mtime 检查。
+
+**事实链**:
+1. `app.py:__name__` 级执行 `_cascade = _build_cascade()` → 创建指向 `data/health.db` 的 production HealthStore
+2. `app = FastAPI(lifespan=_make_lifespan(_cascade, _probe_targets))` → lifespan 闭包捕获**原始** `_cascade`
+3. 测试 `monkeypatch.setattr(app_mod, "_cascade", test_cascade)` → 只影响 handler 内 `_cascade.run()`,不影响 lifespan 闭包
+4. `with TestClient(app_mod.app):` → lifespan startup 执行 `cascade.health_store.init()` → **写入 production `data/health.db`**
+5. 测试注释自认:"health.db mtime **会变**——这是当前...的真实污染"
+6. 但断言只检查 `("trace.db", "ledger.db", "circuit.db")`,**刻意跳过 `health.db`**
+
+**反例**:若未来 `_make_lifespan` 改为也操作 `trace.db`(如启动时写一条 trace),当前测试能抓。但若只操作 `health.db`(当前已是),测试**假绿**——名为"不污染",实为"污染了但我没查这个文件"。
+
+**严重性**:这是子片 2 OpenCode HIGH #1 要闭合的核心反例,但本测未真正闭合。lifespan 闭包绑定原始 cascade 是架构问题,测试绕过而非修复。
+
+## 自由发掘
+
+[CHALLENGE] MED `tests/integration/test_phase1_load_and_recovery.py:192-194` `test_burst_all_providers_returns_global_open_finite` 的防雪崩断言用魔数 5:
+```python
+assert counter.get("bad1", 0) <= 5
+assert counter.get("bad2", 0) <= 5
+```
+注释说"各最多 3 次(threshold)+ 之后是 hard-skip",但 `<= 5` 给 2 次余量。若 cascade 改为 threshold=5 或 chain 重排逻辑微调,真调用可能到 6-7 但仍 ≤5 的姊妹值,测试可能假绿。应断言精确值(如各 == 3 或 ≤ 3)并解释为何不是精确 3(global_open 派生时机可能让某个 provider 多调 1 次)。
+
+[CHALLENGE] MED `tests/integration/test_phase1_load_and_recovery.py:175-195` 同测的 docstring 写"30 个请求总耗时 < 1s(若死循环会 timeout)"但代码中**无任何耗时断言**。若 cascade 内引入 `asyncio.sleep(0.1)` 每跳,总耗时 3s+,测试仍绿,但"不死循环"的防护形同虚设。
+
+[CHALLENGE] MED 缺少 HALF_OPEN 并发探测互斥测(`half_open_busy`)。`circuit_breaker.py` 的 `allow_request` 在 HALF_OPEN 状态若 `probe_in_flight=True` 返 `Decision(False, "half_open_busy")`,但无一测试覆盖此分支。若未来删掉 `probe_in_flight` 检查,并发请求会同时放多个探测,breaker 状态机一致性被破坏,现有测试全绿。
+
+[CHALLENGE] LOW `tests/integration/test_phase1_load_and_recovery.py:373-390` `test_lifespan_with_with_block_starts_and_stops_cleanly` 只验证 handler 返回正确,未验证 lifespan 真被触发。若 starlette 改为不触发 lifespan(如去掉 `with` 语义),handler 仍走 patched `_cascade`,测试仍绿。应加 `app.state` 标记或 mock spy 验证 startup/shutdown 被调。
+
+[CHALLENGE] LOW `tests/integration/test_phase1_load_and_recovery.py:146` `test_burst_single_provider_does_not_cascade_avalanche` 依赖 `breaker.record_failure("good", "k-good", TripReason.SOFT_CONTENT)` 预注册 good 到 `_keys`。这是 `record_success` 不用 `setdefault` 的 workaround(子片 3 已知 caveat)。若未来 `record_success` 改为 `setdefault`,此 workaround 无害但多余;若未来 `_keys` 的 key 结构变化,此预注册可能失效导致 good 不被 breaker 追踪,但 counter 仍能抓雪崩(counter 不依赖 breaker)。残余风险 LOW。
+
+---
+
+[CHALLENGE] 子片 4 测试存在 4 项 CRITICAL/HIGH,需修复后重审

@@ -1,0 +1,66 @@
+[0m
+> build · deepseek-v4-pro
+[0m
+# OpenCode 异构对抗审 — 子片 3
+
+## 维度 1:覆盖度
+
+**[CHALLENGE] HIGH test_phase1_bug_interactions.py:~265** `test_breaker_opens_key_after_three_consecutive_hard_failures` 只验证 breaker 状态机内部状态(3 连 HARD → `ks.state=="open"`),**未验证第 4 次 `cascade.run()` 真被 breaker 阻断**。子片 1 OpenCode #1 的 defer 是「cascade 内累积 3 HARD 后第 4 跳被 hard-skip」,本测只覆盖了 breaker 层,缺 cascade 集成路径。可复现反例:如果把 `allow_request` 改成永远返 `Decision(True,"")`,本测仍绿(它只查 `breaker.get_key_state`,不查 cascade 路由行为)。
+
+**[CHALLENGE] MEDIUM test_phase1_bug_interactions.py:~330** `test_cascade_skips_pre_tripped_open_key_and_routes_to_good` 用 `record_failure(good, SOFT)` 注册 good 到 `_keys` 绕开了 `_global_is_open()` 的已知生产边界 bug(源码锚点 ④ 明确记录:「单一 provider trip 可能让全 OPEN 误判为 global OPEN」)。**没有测试覆盖这个边界 bug 本身**——即当仅 bad 在 `_keys` 且 OPEN、good 未注册时,`_global_is_open()` 会错误返回 True 阻断 good。这是文档已承认的缺陷,但零覆盖。
+
+**[CONSENSUS]** A1 三场景(no_candidates / budget_exhausted / soft_content)覆盖完整,断言落在 cascade.run() 关键分支。A3 三盲区(exact quota / quota=0 / compliance 顺序)覆盖完整。
+
+---
+
+## 维度 2:假绿陷阱
+
+**[CHALLENGE] CRITICAL test_phase1_bug_interactions.py:~350** `test_breaker_global_open_blocks_all_via_derived_aggregate` 的终态断言 `res.last_reason in ("global_open", "key_open")` 是**过弱析取**。可复现反例:如果把 `_global_is_open()` 改成永远 `return False`,cascade 会退到逐 key 检查,每个 key 返 `"key_open"`,测试仍绿——**全局派生熔断完全失效但测试不报**。应断言 `res.last_reason == "global_open"`。
+
+**[CHALLENGE] MEDIUM test_phase1_bug_interfaces.py:~160** `test_no_candidates_when_all_providers_dead_via_health` 的 `counter == {}` 验证了 provider 未被调,但**未区分「因 health 死被 `_surviving_candidates` 过滤」还是「因 cost_gate 超预算被过滤」**。可复现反例:如果把 `_surviving_candidates` 的 health 过滤删掉、仅保留 cost_gate,同时把所有 provider 的 quota 设为 0,本测仍绿(空 survivors → no_candidates),但 health 过滤层已静默失效。
+
+**[CONSENSUS]** counter 计数验证 + trace 直查 + spy CostGate 三层防假绿设计对 budget/cost_gate/breaker 场景有效。`test_budget_exhausted` 的 `counter == expected` 断言能捕获 budget 从 6 改成 7(第 7 个 provider 会被调, counter 不匹配)。
+
+---
+
+## 维度 3:A2 breaker × policy 测试设计
+
+**[CHALLENGE] MEDIUM test_phase1_bug_interactions.py:~300** `test_cascade_skips_pre_tripped_open_key_and_routes_to_good` 用 `record_failure(good, SOFT_CONTENT)` 注册 good 到 `_keys`。注释称这是「production 真实场景」,但实际 production 中一个从未失败过的 provider **不会**在 `_keys` 中(源码锚点 ④ 明确 `record_success` 不 setdefault)。本测的 SOFT 注册是**测试桩**,不是 production 路径。可复现反例:如果未来有人把 `record_failure` 的 `_keys` 注册逻辑删掉(只记计数不记 key),本测会因 good 不在 `_keys` → `_global_is_open()` 误判 True → cascade 全阻断而失败——**但这恰恰是 production 的真实行为**,测试反而把真实 bug 暴露为测试失败,语义倒置。
+
+**[CONSENSUS]** 若 `record_success` 未来改为也 setdefault,本测不受影响(无论哪种路径 good 都在 `_keys` 中),不存在假阴。
+
+---
+
+## 维度 4:顺序契约证
+
+**[CHALLENGE] MEDIUM test_phase1_bug_interactions.py:~390** `test_compliance_check_runs_before_cost_gate` 的 spy 只包装了 `CostGate.survivors()`,**未验证 health 过滤与 compliance 的顺序**。可复现反例:如果把 compliance 检查移到 `_surviving_candidates` 内部、health 过滤之后(但仍早于 cost_gate),spy_calls 仍为空,测试仍绿,但 layer 顺序已变为 health → compliance → cost_gate,与规约 layer ① compliance 不符。
+
+**[CONSENSUS]** spy 方案对 compliance vs cost_gate 的顺序验证有效:若 compliance 被移到 `_surviving_candidates` 之后,`survivors()` 会被调,spy_calls 非空,测试失败。
+
+---
+
+## 维度 5:状态污染 / tmp_path 隔离
+
+**[CONSENSUS]** 每测通过 `_make_cascade(tmp_path, ...)` 创建独立 SQLite 文件(`health.db` / `circuit.db` / `ledger.db` / `trace.db`),pytest 的 `tmp_path` 每测唯一,无跨测泄漏。`test_breaker_global_open` 的 `key_hard_threshold=1` 是实例级参数,不影响其他测试。
+
+**[CHALLENGE] LOW test_phase1_bug_interactions.py:~280** `test_cost_gate_exact_quota_boundary_blocks_at_equality` 创建了 HealthStore 但从未 `await health.init()` / `await health.close()`,SQLite 连接可能未正常关闭(虽然 pytest 清理 tmp_path 时会删文件,但连接泄漏在极端并发下可能触发 `sqlite3.OperationalError: unable to close due to unfinalized statements`)。
+
+---
+
+## 自由发掘
+
+**[CHALLENGE] HIGH** 缺少 **CostGate fail-open 行为**测试。源码锚点 ③ `CostGate.survivors()` 中 `except Exception: return list(names)` 是静默 fail-open——若 `ledger.total()` 抛异常(如 DB 锁、表损坏),所有 provider 无条件放行,可能绕过配额限制薅羊毛。三批 defer 均未覆盖此路径。
+
+**[CHALLENGE] MEDIUM** 缺少 **HALF_OPEN 探测**测试。源码锚点 ④ breaker 的 HALF_OPEN 状态(cooldown 到期后放 1 个探测请求)在 10 个测试中零覆盖。若 `next_probe_at` 计算有误或 `probe_in_flight` 逻辑错误,无测试捕获。
+
+**[CHALLENGE] MEDIUM** `test_budget_exhausted` 硬编码 7 个 provider,隐式耦合 `DEFAULT_RETRY_BUDGET=6`。若有人把 budget 改为 5,本测因 `hops_attempted == DEFAULT_RETRY_BUDGET` 自适应,但只有 5 个 provider 被调、后 2 个被 budget 门拦,`counter` 断言仍会失败——**能捕获变更,但失败信息不直观**(counter 显示 5 个而非预期的 6 个),排查成本高。
+
+**[CHALLENGE] LOW** `test_all_soft_content_chain_terminates_with_soft_content_reason` 用 3 个 provider < budget=6,验证链耗尽而非 budget 耗尽。但如果有人把 `is_complete` 改成对空字符串也返 True,本测的 `last_reason` 会变成 `"initial"`(第一个 provider 被误判成功),测试失败——**能捕获,但失败根因指向 `is_complete` 而非 cascade,排查路径长**。
+
+---
+
+**[CHALLENGE] 子片 3 测试存在 2 项 CRITICAL/HIGH,需修复后重审**
+
+具体:
+- **CRITICAL**: `test_breaker_global_open` 的 `last_reason in (...)` 过弱析取,全局派生熔断失效不报
+- **HIGH**: `test_breaker_opens_key` 缺第 4 次 cascade.run() 集成验证;缺 CostGate fail-open 测试

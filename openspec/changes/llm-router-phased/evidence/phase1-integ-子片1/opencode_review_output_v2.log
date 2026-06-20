@@ -1,0 +1,20 @@
+[0m
+> build · deepseek-v4-pro
+[0m
+[CHALLENGE] HIGH cascade.py:341 `tests/integration/test_phase1_critical_bugs.py:307-324` — 全组件 Cascade 构建时传入了 `CircuitBreaker(db_path=..., key_hard_threshold=3)`，但 4 个测试中**没有任何一个触发 breaker 的阻断路径**（`dec.allowed=False`）。所有 provider 要么一次成功、要么抛 `ProviderError`（被 `except ProviderError` 捕获后 `continue`，不会累积到 threshold=3）。反例：如果把 cascade.py:341 的 `if not dec.allowed:` 改成 `if False:`（永不允许阻断），全部 4 测试依然全绿。breaker 集成路径在子片 1 出厂门中零覆盖。
+
+[CHALLENGE] MED cascade.py:251 `tests/integration/test_phase1_critical_bugs.py:392,468` — `_surviving_candidates` 调用 `health_store.latest_probe(provider, key)`（key="k1"，来自 `_build_full_cascade:318`），但测试中 `record_probe(provider="pDead", ...)` / `record_probe(provider="pB", ...)` 的调用签名按 §源码锚点④ 为 `(provider, latency_ms, alive)`，未显式传 key。若 `record_probe` 实际签名不含 key 参数，则 `latest_probe(provider, key)` 查询将 miss，pDead/pB 不会被剔除，`test_bug_fallback01` 与 `test_bug_fr02` 应败。当前测试若绿，说明锚点文档签名与实际实现不一致，存在契约隐式依赖风险。反例：若未来重构 `record_probe` 严格按文档签名（不存 key），两测试将假绿（pDead/pB 实际未被过滤但 `calls.get("pDead",0)==0` 仍通过，因为 provider 根本没被 plan 进去——取决于 strategy 行为而非 health 过滤）。
+
+[CHALLENGE] MED cascade.py:374 `tests/integration/test_phase1_critical_bugs.py:全文` — `is_complete(text, model)` 软内容失败路径（SOFT_CONTENT）在 4 个测试中零覆盖。所有 `_FakeProvider` 要么抛 `ProviderError`（走 HARD 路径），要么返回完整 text（走成功路径）。反例：若把 cascade.py:374 的 `if not is_complete(text, model):` 改成 `if False:`，全部测试依然全绿。
+
+[CHALLENGE] MED cascade.py:86-87 `tests/integration/test_phase1_critical_bugs.py:全文` — `if not survivors: return CascadeResult(None, None, False, 0, "no_candidates")` 路径零覆盖。没有任何测试将所有 provider 标为 `alive=False`。反例：若把 cascade.py:87 的 `"no_candidates"` 改成 `"typo"` 或删除该分支，全部测试依然全绿。
+
+[CHALLENGE] MED `tests/integration/test_phase1_critical_bugs.py:299-304` — `_entry()` 默认 `quota=1_000_000, is_free=True, cost_multiplier=0.0`，cost_gate 在所有测试中**静默旁路**。`_build_full_cascade:314-315` 创建了 `CostGate(ledger, quotas)` 并传入 Cascade，但 cascade.py 的 §源码锚点① 截段中（line 220-396）**未出现 cost_gate 的调用点**。若 cost_gate 实际在截段外的代码中被调用，则 quota=1M 旁路意味着 cost_gate 集成路径零覆盖；若 cost_gate 根本未集成到 run() 流程中，则 `_build_full_cascade` 的 "全组件" 声明具有误导性。反例：若 cost_gate 在某处被调用且逻辑有 bug（如 quota 检查反转），全部测试依然全绿。
+
+[CHALLENGE] MED `tests/integration/test_phase1_critical_bugs.py:335-366` — BUG-FR-01 测试断言 `len(chain) == 7` 和末跳归因，但**未验证前 6 跳各自的 `hop_attribution`**（depth/reason/from/to）。反例：若把 cascade.py:299-303 的 `advance()` 调用改成始终返回 `initial_attribution(name)`（所有跳归因相同），`calls` 计数断言仍通过，仅 `len(chain)==7` 和末跳归因断言通过（末跳是 budget_exhausted 走不同代码路径），前 6 跳归因错误不会被捕获。
+
+[CHALLENGE] LOW `tests/integration/test_phase1_critical_bugs.py:444` — 直接访问私有属性 `cascade._store_ready`。若 `__init__` 中该属性被重命名，测试将因 AttributeError 失败而非语义失败，属于脆性断言。
+
+---
+
+[CHALLENGE] 子片 1 测试存在 1 项 HIGH（breaker 集成零覆盖）+ 5 项 MED，需修复后重审
