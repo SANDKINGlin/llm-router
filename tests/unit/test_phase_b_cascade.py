@@ -232,3 +232,106 @@ class TestGrayDisable:
 
         cascade = app_mod._build_cascade()
         assert any(n.startswith("dyn-") for n in cascade._candidate_names)
+
+
+# ── B4.2 失败回滚:动态全失败 fallback 静态/mock ──────────────────────
+
+class TestDynamicFailFallback:
+    def test_dynamic_fail_falls_back_to_mock(self, tmp_path):
+        """动态 adapter 全失败(ProviderError HARD)→ Cascade fallback 到 mock,请求仍成功。
+
+        D5:复用现有 fallback 链,不额外加逻辑。验三层熔断 + fallback 对动态条目同样生效。
+        已知 breaker 语义(同 test_fallback_e2e):fallback 兄弟 provider 须先 seed CLOSED-known,
+        否则 global_open 冻结。生产里 mock 由探活/首次成功 seed;此处显式 seed 模拟。
+        """
+        from llm_router.api.cascade import Cascade
+        from llm_router.api.epsilon_greedy import EpsilonGreedy
+        from llm_router.config import ProviderEntry
+        from llm_router.providers.base import Provider, ProviderError
+        from llm_router.providers.mock import MockProvider
+        from llm_router.resilience.circuit_breaker import CircuitBreaker, TripReason
+        from llm_router.store.trace import TraceStore
+
+        class _BoomDyn(Provider):
+            name = "dyn-nvidia-fail"
+            async def complete(self, prompt):
+                raise ProviderError("dynamic provider down")
+
+        entries = {
+            "dyn-nvidia-fail": ProviderEntry(
+                name="dyn-nvidia-fail", tier="strong", quota=500000, cooldown_s=30,
+                is_free=True, cost_multiplier=0.0,
+            ),
+            "mock": ProviderEntry(
+                name="mock", tier="fast", quota=1000000, cooldown_s=1,
+                is_free=True, cost_multiplier=0.0,
+            ),
+        }
+        # 动态在前(排序键平局→插入序),mock 兜底在后。
+        candidates = [
+            ("dyn-nvidia-fail", _BoomDyn(), "NVIDIA_API_KEY"),
+            ("mock", MockProvider(), "mock"),
+        ]
+        breaker = CircuitBreaker(tmp_path / "circuit.db")  # 默认阈值 3
+        # seed mock CLOSED-known(防 dyn 失败后 global_open 冻结 mock,同 e2e 纪律)
+        breaker.record_failure("mock", "mock", TripReason.HARD)  # 1 硬失败 < 阈值 → CLOSED
+        cascade = Cascade(
+            store=TraceStore(tmp_path / "trace.db"),
+            breaker=breaker,
+            strategy=EpsilonGreedy(entries, chooser=lambda: 1.0),  # 纯利用→链首 dyn
+            candidates=candidates,
+            budget=6,
+        )
+        result = _run(cascade.run("hi", correlation_id="c1"))
+        assert result.success is True
+        assert "[mock]" in (result.final_text or "")  # fallback 到 mock
+        assert result.hops_attempted >= 2  # dyn 试过(失败) + mock 成功
+        # dyn 失败被记账(HARD;阈值 3 → 仍 CLOSED 但 hard_failures>=1)
+        st = cascade._breaker.get_key_state("dyn-nvidia-fail", "NVIDIA_API_KEY")
+        assert st.hard_failures >= 1
+
+
+# ── B4.3 清退回滚:expire 全部 → 重建纯静态 ──────────────────────────
+
+class TestExpireRollback:
+    def test_expire_all_rebuild_pure_static(self, tmp_path, monkeypatch):
+        """全部动态条目 expire_entry → 重建回调产纯静态候选池(无动态)。
+
+        守 D5 清退回滚:expire 全部 active → active_models 空 → 三层候选池退化为 [static, mock]。
+        """
+        import llm_router.app as app_mod
+        from llm_router.scanner.snapshot import DiscoveredModel, ScannerSource
+        from llm_router.store.scanner_store import ScannerStore
+
+        scanner_db = tmp_path / "scanner.db"
+        monkeypatch.setattr(app_mod, "_SCANNER_DB", scanner_db)
+        monkeypatch.setattr("llm_router.scanner.mnfst._DEFAULT_MANIFEST", _tmp_manifest(tmp_path))
+        monkeypatch.setenv("STATICREAL_KEY", "sk-static")
+        monkeypatch.setenv("NVIDIA_API_KEY", "sk-nv")
+        monkeypatch.setattr(app_mod, "policy", lambda: _make_policy(gray_percent=100))
+
+        # 1. seed 1 active 动态条目 → _build_cascade 含动态
+        m = DiscoveredModel(source=ScannerSource.NVIDIA, model_id="nvidia/a-70b", tier="strong")
+        _seed_scanner_db(scanner_db, [m])
+        cascade = app_mod._build_cascade()
+        assert any(n.startswith("dyn-") for n in cascade._candidate_names)
+
+        # 2. expire 全部 → 重建回调 → 候选池纯静态
+        async def expire_and_rebuild():
+            store = ScannerStore(scanner_db)
+            await store.init()
+            try:
+                # expire 全部 active
+                for row in await store.list_entries(status="active"):
+                    await store.expire_entry(row.model_id)
+                # 触发重建回调(模拟 tick 后)
+                rebuild = app_mod._make_rebuild_callback(cascade, store)
+                await rebuild(None)
+            finally:
+                await store.close()
+        _run(expire_and_rebuild())
+
+        # 重建后候选池无动态(纯 staticreal + mock)
+        assert not any(n.startswith("dyn-") for n in cascade._candidate_names)
+        assert "staticreal" in cascade._candidate_names
+        assert "mock" in cascade._candidate_names
