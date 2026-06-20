@@ -23,6 +23,7 @@ entry 与静态免费 provider 同档竞争。tier 只进能力匹配首槽,不�
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -283,3 +284,45 @@ class ScannerStore:
             )
             for r in rows
         ]
+
+
+def load_active_models_sync(db_path: str | Path) -> list[DiscoveredModel]:
+    """同步只读 scanner.db 的 active 动态条目(Phase B · B2.1)。
+
+    供 ``app._build_cascade`` 在 **import 期**(同步上下文)读 scanner.db,把动态候选热入
+    候选池。用 stdlib sqlite3 read-only 打开(零 aiosqlite 依赖,不创建文件、不写 WAL),
+    与 ScannerStore.active_models() 同语义(active 条目 → DiscoveredModel)。
+
+    fail-open(同 health_store fail-open 理念):
+      - db 文件不存在 → [](向后兼容:无 scanner.db = 无动态,候选池退化两层)
+      - 读失败(sqlite 异常/表不存在/损坏)→ [](不崩 import,守 routing-change-safety)
+
+    排序按 model_id 稳定(同 active_models,不引入路由偏好)。
+
+    红线:只读,不写;不 init schema(表不存在 → except 返 [])。
+    """
+    p = Path(db_path)
+    if not p.exists():
+        return []
+    try:
+        # URI mode=ro:只读,防意外写;db 损坏/表缺失 → sqlite3.OperationalError → except。
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT model_id, source, display_name, tier FROM dynamic_entry "
+            "WHERE status = ? ORDER BY model_id ASC",
+            (ENTRY_STATUS_ACTIVE,),
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    return [
+        DiscoveredModel(
+            source=ScannerSource(r["source"]),
+            model_id=r["model_id"],
+            display_name=r["display_name"],
+            tier=r["tier"],
+            is_free=True,
+        )
+        for r in rows
+    ]

@@ -8,6 +8,7 @@ S2.x 接真 provider 时由 Scanner(S2.3)按 entry.base_url/api_key_env 建真 a
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -28,40 +29,76 @@ from .health.probe import HealthProber
 from .providers.base import Provider
 from .providers.mock import MockProvider
 from .resilience.circuit_breaker import CircuitBreaker
+from .scanner.dynamic import build_dynamic_adapters, build_dynamic_entries
 from .scanner.mnfst import build_adapters, load_manifest
 from .store.health_store import HealthStore
+from .store.scanner_store import load_active_models_sync
 from .store.token_ledger import LedgerStore
 from .store.trace import TraceStore
 
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_SCANNER_DB = _DATA_DIR / "scanner.db"
+
+
+def _build_three_layer_candidates(
+    pol,
+    manifest_entries,
+) -> tuple[dict, list]:
+    """构造三层候选池(entries dict + candidates list):静态真 → 动态 → mock(Phase B · B2.1)。
+
+    单一候选构造源(供 _build_cascade + admin_rollback 复用,DRY 防漂移):两者必须产同形
+    candidates,否则 rollback 会静默丢/加动态条目。
+
+    entries dict:policy(mock)+ manifest(真)+ 动态(Phase B),供 EpsilonGreedy._rank 排序键
+    + TierMatcher。动态 entry 进 entries(供 _rank 按 name 查到),否则 _rank missing 报错。
+
+    candidates:``[*real_adapters, *dynamic_candidates, *mock_candidates]``。
+    顺序关键(修 B1 mock 支配 + D2 动态放静态后 mock 前):三者排序键全平局时 plan() 稳定排序
+    保持插入序 → 静态真 → 动态 → mock。
+
+    Phase B 灰度守门(B4.1):gray_percent=0 → 不加载动态(纯静态+mock,向后兼容两层)。
+    scanner.db 不存在/空/读失败 → 无动态(同向后兼容)。
+
+    红线:动态 is_free=True/cost=0 与静态免费 provider 同档竞争;排序键字典序不变。
+    """
+    entries = {e.name: e for e in (*pol.providers, *manifest_entries)}
+    real_adapters = build_adapters(manifest_entries)  # 配了 key 的真 adapter
+    mock_candidates = [(e.name, MockProvider(), e.name) for e in pol.providers]
+
+    # Phase B · B2.1:动态候选池热入。gray_percent=0(禁用)或 scanner.db 无 active → 无动态。
+    dynamic_candidates: list = []
+    if pol.gray_percent > 0:
+        active_models = load_active_models_sync(_SCANNER_DB)
+        if active_models:
+            dynamic_entries = build_dynamic_entries(active_models)
+            entries.update({e.name: e for e in dynamic_entries})
+            dynamic_candidates = build_dynamic_adapters(
+                active_models,
+                nvidia_key=os.environ.get("NVIDIA_API_KEY"),
+                openrouter_key=os.environ.get("OPENROUTER_API_KEY"),
+            )
+
+    candidates: list = [*real_adapters, *dynamic_candidates, *mock_candidates]
+    return entries, candidates
+
 
 def _build_cascade() -> Cascade:
-    """构造生产 Cascade(模块级单例):mock 兜底 + 真 provider(配了 key 的)入候选池。
+    """构造生产 Cascade(模块级单例):三层候选池 静态真→动态→mock(Phase B · B2.1)。
 
-    候选池:
-      - 真 OpenAIProvider(mnfst 清单里 api_key_env 在环境有值的 entry,**在前**,S2.3 真集成)
-      - MockProvider(router-policy.yaml 的 mock 条目,**最后兜底**——真 provider 全失败才用)
-    顺序关键(修 B1 mock 支配):mock 与真 provider 排序键全平局(is_free/cost 相同)时,
-    plan() 稳定排序保持插入序 → 真 provider 必须在前才会被优先调用;否则 mock 链首即成功,
-    真 provider 形同虚设。无 key 时 candidates=[mock] → mock 正常(test_health 守绿)。
+    候选构造委托 ``_build_three_layer_candidates``(单一源,与 admin_rollback 同形)。
+    详见该函数 docstring。
 
-    **每次调用读最新 manifest + env**(load_manifest/build_adapters 在内),供
+    **每次调用读最新 manifest + env + scanner.db**,供
     test_app_build_cascade_orders_real_before_mock 注入临时 manifest 后验证顺序。
     S2.8c:注入共享 HealthStore(data/health.db)——Cascade 路由前 hard-skip 死亡 key(Face 2),
     lifespan 起探活循环写它 + 喂 CB(Face 1/3)。Cascade 不 init(fail-open 读),lifespan init。
     """
     pol = policy()
     manifest_entries = load_manifest()
-    # entries map:policy(mock)+ manifest(真),供 EpsilonGreedy 排序键 + TierMatcher 用。
-    entries = {e.name: e for e in (*pol.providers, *manifest_entries)}
+    entries, candidates = _build_three_layer_candidates(pol, manifest_entries)
 
-    real_adapters = build_adapters(manifest_entries)  # 配了 key 的真 adapter
-    mock_candidates = [(e.name, MockProvider(), e.name) for e in pol.providers]
-    # 真 provider 在前,mock 最后兜底(修 B1)。
-    candidates: list = [*real_adapters, *mock_candidates]
-
-    # S2.7 合规门卫:候选 entries(含 mock)→ 别名归一化 + 同 provider 多账号检测。
-    # Phase1 mock-only(entity=mock,无 api_key_env)→ 合规 → 门卫放行;配了同实体多 key 才拦。
+    # S2.7 合规门卫:候选 entries(含 mock + 动态)→ 别名归一化 + 同 provider 多账号检测。
+    # 动态 entry api_key_env=None(无账号)→ 不参与多账号检测(同 mock),合规放行。
     enforcer = PolicyEnforcer(entries.values())
 
     # S2.4 Cost Budget Gate:共享 ledger(Cascade writer + CostGate reader 同一实例)+
@@ -328,12 +365,9 @@ def admin_rollback(req: _RollbackRequest, _admin: None = Depends(_admin_guard)) 
                 f"policy()={pol.policy_version} (revert policy.yaml 后再调)"
             ),
         )
-    # ③ 重新构造候选
+    # ③ 重新构造候选(同 _build_cascade 同形,Phase B 三层:静态真→动态→mock)
     manifest_entries = load_manifest()
-    entries = {e.name: e for e in (*pol.providers, *manifest_entries)}
-    real_adapters = build_adapters(manifest_entries)
-    mock_candidates = [(e.name, MockProvider(), e.name) for e in pol.providers]
-    candidates: list = [*real_adapters, *mock_candidates]
+    entries, candidates = _build_three_layer_candidates(pol, manifest_entries)
     # ④ 同步刷新 strategy / cost_gate / enforcer(职责分离:各组件自己 refresh)
     _cascade._strategy.refresh_entries(entries)  # type: ignore[union-attr]
     _cascade._cost_gate.update_quotas({e.name: e.quota for e in entries.values()})  # type: ignore[union-attr]
