@@ -260,13 +260,19 @@ class TestPollAll:
 
 
 # ── gated real network ────────────────────────────────────────────
+# conftest 模块级清掉 NVIDIA_API_KEY(hermetic 基线,防真 key 泄漏进 import 期 _build_cascade),
+# 故 gated 真测试不读 NVIDIA_API_KEY(已被清),改读 conftest 不清的 SCANNER_LIVE_KEY 作 gate +
+# 运行时 monkeypatch 注回 env 给 poll_nvidia。这样既守 hermetic 基线又能跑真测。
 
 @pytest.mark.skipif(
-    not (os.environ.get("SCANNER_LIVE") and os.environ.get("NVIDIA_API_KEY")),
-    reason="需 SCANNER_LIVE=1 + NVIDIA_API_KEY(真 API,默认 skip)",
+    not (os.environ.get("SCANNER_LIVE") and os.environ.get("SCANNER_LIVE_KEY")),
+    reason="需 SCANNER_LIVE=1 + SCANNER_LIVE_KEY=<nvidia key>(真 API,默认 skip)",
 )
 class TestPollNvidiaLive:
-    def test_real_nvidia_models_endpoint(self):
+    def test_real_nvidia_models_endpoint(self, monkeypatch):
+        # conftest 已清 NVIDIA_API_KEY(hermetic);运行时注回 SCANNER_LIVE_KEY 的值给 poll_nvidia。
+        key = os.environ["SCANNER_LIVE_KEY"]
+        monkeypatch.setenv("NVIDIA_API_KEY", key)
         snap = _run(poll_nvidia())  # 真 httpx + 真 key
         # 不断言具体模型(随时间变),只断言抓到了非空且形状对
         assert snap.source is ScannerSource.NVIDIA
