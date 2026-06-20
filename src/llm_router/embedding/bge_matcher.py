@@ -64,17 +64,33 @@ class BgeMatcher:
         - task_type 为 None/空/未知 → True(全对口,向后兼容)。
         - 已知 task_type → cosine(tier 能力描述, 任务描述) > threshold。
         - 未知 tier → 当 fast(fail-open,与 TierMatcher 同;policy Literal 已校验合法 tier)。
+
+        实现复用 score()(S2.9-0.2):score None 即全对口情况 → True;否则 score>threshold。
+        """
+        s = self.score(tier, task_type)
+        return True if s is None else s > self._threshold
+
+    def score(self, tier: str, task_type: str | None) -> float | None:
+        """tier 能力对 task_type 的 cosine 分(S2.9-0.2,供 Golden Set 校准)。
+
+        - task_type 为 None/空/未知 → None(全对口情况,校准时排除;matches 据此返 True)。
+        - 已知 task_type → cosine(tier 能力描述, 任务描述) ∈ [-1.0, 1.0]。
+        - 未知 tier → 当 fast(fail-open,与 matches 同)。
+
+        校准(embedding/calibration.py)收集 score 非 None 的配对,算 Pearson 预测力 +
+        遍历候选 threshold;校准结果注入 __init__ threshold。score 不进排序键(只 matches 的
+        bool 进首槽),守 routing-priority-principle。
         """
         if not task_type:
-            return True
+            return None
         norm = task_type.strip().lower()
         if not norm:
-            return True
+            return None
         task_text = self._task_text(norm)
         if task_text is None:
-            return True  # 未知 task_type → 全对口(fail-open 向后兼容)
+            return None  # 未知 task_type → None(matches 据此返 True 全对口)
         cap_text = self._capability_text.get(tier, _TIER_CAPABILITY_TEXT["fast"])
-        return cosine(self._encoder.encode(cap_text), self._encoder.encode(task_text)) > self._threshold
+        return cosine(self._encoder.encode(cap_text), self._encoder.encode(task_text))
 
     @staticmethod
     def _task_text(norm: str) -> str | None:

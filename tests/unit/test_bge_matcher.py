@@ -115,6 +115,45 @@ class TestBgeMatcherInterface:
         assert strict.matches("strong", "reasoning") is False
 
 
+class TestBgeMatcherScore:
+    """S2.9-0.2:score(tier, task_type) -> float|None 暴露 cosine 分(供校准)。
+
+    matches()(0.1)复用 score():None → 全对口 True;否则 cosine > threshold。
+    全对口情况(None/空/未知 task_type)→ score 返 None,校准时排除。
+    """
+
+    def test_score_returns_float_for_known_task(self, m_bge):
+        """已知 task_type → 返 cosine 分(浮点,∈[-1,1])。"""
+        s = m_bge.score("strong", "reasoning")
+        assert s is not None
+        assert isinstance(s, float)
+        assert -1.0 <= s <= 1.0
+
+    def test_score_none_for_none_task_type(self, m_bge):
+        """None task_type(全对口)→ score None(校准排除)。"""
+        assert m_bge.score("strong", None) is None
+
+    def test_score_none_for_empty_task_type(self, m_bge):
+        assert m_bge.score("strong", "") is None
+        assert m_bge.score("strong", "   ") is None
+
+    def test_score_none_for_unknown_task_type(self, m_bge):
+        """未知 task_type(全对口 fail-open)→ score None。"""
+        assert m_bge.score("strong", "totally-unknown-xyz") is None
+
+    def test_score_consistent_with_matches(self, m_bge):
+        """★ score 与 matches 一致:对已知 task_type,score>threshold ⟺ matches True。"""
+        for tier, task in [("strong", "reasoning"), ("fast", "reasoning"),
+                           ("fast", "chat"), ("medium", "chat")]:
+            s = m_bge.score(tier, task)
+            assert s is not None
+            assert m_bge.matches(tier, task) is (s > 0.5)
+
+    def test_score_deterministic(self, m_bge):
+        """同 (tier, task) 两次 score 相同(HashEncoder 确定性)。"""
+        assert m_bge.score("strong", "reasoning") == m_bge.score("strong", "reasoning")
+
+
 @pytest.fixture
 def m_bge() -> BgeMatcher:
     """默认 BgeMatcher(tier→能力描述内置,HashEncoder,threshold 中等)。"""
