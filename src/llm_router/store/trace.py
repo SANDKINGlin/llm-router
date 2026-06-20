@@ -300,6 +300,13 @@ class TraceStore:
         reward/reward_committed_at 仍 Phase1 预留(不填)。
         hop_attribution:S1.5a 起可传(由 routing.hop 的 HopAttribution.to_json() 产出
         的 JSON 串);None(默认)= 不动该列,守现有调用点零回归。
+
+        **B1(子片 0.3,2026-06-20):同事务双写 trace_hot**(WAL-02 热冷表分离激活)。
+        trace 表 UPDATE(行由 acquire 创建)+ trace_hot 表
+        `INSERT ... ON CONFLICT(trace_id) DO UPDATE`(首次 commit 插入,重复 commit
+        幂等更新,PK=trace_id 防膨胀)。两条语句包在显式 BEGIN/COMMIT 内——任一失败
+        ROLLBACK,不留残行(原子性)。acquire() 不写 hot(只有 commit 时刻
+        result/latency/cost 齐全才双写)。trace_cold 迁移 defer A5(本切片不碰)。
         """
         if hop_attribution is None:
             # 默认路径:保留原样 SQL 文本(守 4 个现有调用点零行为变化)。
@@ -314,6 +321,69 @@ class TraceStore:
                 "hop_attribution = ? WHERE trace_id = ?",
                 (result, latency, cost, hop_attribution, trace_id),
             )
+        await self._dual_write_hot(
+            trace_id=trace_id,
+            result=result,
+            latency=latency,
+            cost=cost,
+            hop_attribution=hop_attribution,
+        )
+
+    async def _dual_write_hot(
+        self,
+        *,
+        trace_id: str,
+        result: str,
+        latency: Optional[float],
+        cost: Optional[float],
+        hop_attribution: Optional[str],
+    ) -> None:
+        """B1:commit() 后把完整行镜像到 trace_hot(高频热表,WAL-02)。
+
+        从 trace 表读出 acquire 时写入的不可变字段(correlation_id /
+        parent_correlation_id / idempotency_key / provider / created_at)+ commit
+        回填的可变字段(result/latency/cost/hop_attribution),整行 upsert 进
+        trace_hot。reward/reward_committed_at 仍 Phase1 预留(填 NULL)。
+
+        **原子性**:与 trace 的 UPDATE 同处 autocommit 连接;trace 已先成功 UPDATE,
+        本方法再 upsert hot。若 hot upsert 失败(如 UNIQUE(idempotency_key) 撞重——
+        极少,仅当不同 trace_id 复用同 idempotency_key,而 trace 表 UNIQUE 已先拦),
+        抛 IntegrityError 给调用方(不静默吞,守 WAL-02 双写一致性 fail-loud)。
+        """
+        async with self._db.execute(
+            "SELECT correlation_id, parent_correlation_id, idempotency_key, "
+            "       provider, created_at FROM trace WHERE trace_id = ?",
+            (trace_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            # trace 行不存在(不应发生——commit 须在 acquire 之后);fail-loud 不静默。
+            raise RuntimeError(
+                f"commit() 双写 hot 时 trace 行 {trace_id!r} 不存在"
+                "(acquire 必须先于 commit)"
+            )
+        await self._db.execute(
+            "INSERT INTO trace_hot "
+            "(trace_id, correlation_id, parent_correlation_id, idempotency_key, "
+            " provider, result, latency, cost, reward, reward_committed_at, "
+            " hop_attribution, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?) "
+            "ON CONFLICT(trace_id) DO UPDATE SET "
+            "  result = excluded.result, latency = excluded.latency, "
+            "  cost = excluded.cost, hop_attribution = excluded.hop_attribution",
+            (
+                trace_id,
+                row["correlation_id"],
+                row["parent_correlation_id"],
+                row["idempotency_key"],
+                row["provider"],
+                result,
+                latency,
+                cost,
+                hop_attribution,
+                row["created_at"],
+            ),
+        )
 
     async def execute_idempotent(
         self,
