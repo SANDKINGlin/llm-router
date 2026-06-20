@@ -622,3 +622,243 @@ def test_get_chain_returns_arm(tmp_path):
             await store.close()
 
     _run(body())
+
+
+# ── S1.1 增强子片 0.5(2026-06-20,A5):trace 异步迁移 cold(WAL-02 热表有界)──
+# 后台把老热行从 trace_hot 迁 trace_cold,守热表不膨胀。本切片交付迁移原语
+# `migrate_cold_once` + 后台循环原语 `run_cold_migrator_loop`;lifespan 自动接线
+# defer Phase B(TraceStore 懒初始化 + S1.0 零污染 lifespan 红线 + Phase1 近零流量)。
+
+import datetime as _dt  # noqa: E402
+
+from llm_router.store.trace import run_cold_migrator_loop  # noqa: E402
+
+_UTC = _dt.timezone.utc
+
+
+async def _insert_hot(store, *, trace_id, created_at, arm=None, result="r"):
+    """测试辅助:直接往 trace_hot 插一行(带可控 created_at,绕过 _now_iso)。"""
+    await store._db.execute(
+        "INSERT INTO trace_hot "
+        "(trace_id, correlation_id, parent_correlation_id, idempotency_key, "
+        " provider, result, latency, cost, reward, reward_committed_at, "
+        " hop_attribution, created_at, arm) "
+        "VALUES (?, ?, NULL, ?, ?, ?, 1.0, 0.01, NULL, NULL, NULL, ?, ?)",
+        (trace_id, f"cid-{trace_id}", f"idem-{trace_id}", "p", result, created_at, arm),
+    )
+
+
+def test_migrate_cold_moves_old_rows_to_cold(tmp_path):
+    """A5:老热行(created_at < cutoff)迁 trace_cold,新行留 trace_hot;返回迁移数。"""
+    import sqlite3
+
+    now = _dt.datetime(2026, 6, 20, 10, 1, 0, tzinfo=_UTC)
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            await _insert_hot(store, trace_id="old-1", created_at="2026-06-20T09:58:00+00:00")
+            await _insert_hot(store, trace_id="old-2", created_at="2026-06-20T09:59:30+00:00")
+            await _insert_hot(store, trace_id="new-1", created_at="2026-06-20T10:00:30+00:00")
+            n = await store.migrate_cold_once(max_age_seconds=60.0, now=now)
+            assert n == 2, f"应迁 2 行(2 老);实际 {n}"
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        hot = {r[0] for r in conn.execute("SELECT trace_id FROM trace_hot")}
+        cold = {r[0] for r in conn.execute("SELECT trace_id FROM trace_cold")}
+        assert hot == {"new-1"}, f"hot 应只剩新行;实际 {hot}"
+        assert cold == {"old-1", "old-2"}, f"cold 应含 2 老行;实际 {cold}"
+
+
+def test_migrate_cold_preserves_all_fields_including_arm(tmp_path):
+    """A5:迁移逐列保真(含 A4 的 arm),cold 行字段 == 原 hot 行字段。"""
+    import sqlite3
+
+    from llm_router.store.trace import TRACE_COLUMNS
+
+    now = _dt.datetime(2026, 6, 20, 10, 1, 0, tzinfo=_UTC)
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            await _insert_hot(
+                store, trace_id="full-1", created_at="2026-06-20T09:00:00+00:00",
+                arm="p/m/k", result="r-full",
+            )
+            await store.migrate_cold_once(max_age_seconds=60.0, now=now)
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        hot_count = conn.execute("SELECT COUNT(*) FROM trace_hot").fetchone()[0]
+        assert hot_count == 0, "hot 应空(已迁)"
+        cold_row = dict(zip(
+            [r[1] for r in conn.execute("PRAGMA table_info(trace_cold)")],
+            conn.execute("SELECT * FROM trace_cold").fetchone(),
+        ))
+        for col in TRACE_COLUMNS:
+            assert cold_row[col] is not None or col in (
+                "parent_correlation_id", "reward", "reward_committed_at", "hop_attribution"
+            ), f"列 {col} 意外 None:{cold_row[col]!r}"
+        # 关键保真断言(含 A4 arm)
+        assert cold_row["trace_id"] == "full-1"
+        assert cold_row["arm"] == "p/m/k", f"arm 应保真迁移;实际 {cold_row['arm']!r}"
+        assert cold_row["result"] == "r-full"
+        assert cold_row["latency"] == 1.0
+        assert cold_row["cost"] == 0.01
+
+
+def test_migrate_cold_idempotent(tmp_path):
+    """A5:重复迁移不重复入 cold(ON CONFLICT DO NOTHING),hot 不残留。"""
+    import sqlite3
+
+    now = _dt.datetime(2026, 6, 20, 10, 1, 0, tzinfo=_UTC)
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            await _insert_hot(store, trace_id="old-1", created_at="2026-06-20T09:00:00+00:00")
+            n1 = await store.migrate_cold_once(max_age_seconds=60.0, now=now)
+            n2 = await store.migrate_cold_once(max_age_seconds=60.0, now=now)
+            assert n1 == 1
+            assert n2 == 0, f"二次迁移应 0(hot 已空);实际 {n2}"
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM trace_cold").fetchone()[0] == 1, "cold 不应重复"
+        assert conn.execute("SELECT COUNT(*) FROM trace_hot").fetchone()[0] == 0
+
+
+def test_migrate_cold_batch_size_limits_per_tick(tmp_path):
+    """A5:batch_size 限单次 INSERT 行数;剩余老行下次 tick 迁(渐进有界)。"""
+    import sqlite3
+
+    now = _dt.datetime(2026, 6, 20, 10, 1, 0, tzinfo=_UTC)
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            for i in range(5):
+                await _insert_hot(
+                    store, trace_id=f"old-{i}", created_at=f"2026-06-20T09:00:0{i}+00:00",
+                )
+            n1 = await store.migrate_cold_once(max_age_seconds=60.0, batch_size=2, now=now)
+            assert n1 == 2, f"首批应迁 2(batch_size=2);实际 {n1}"
+            n2 = await store.migrate_cold_once(max_age_seconds=60.0, batch_size=2, now=now)
+            assert n2 == 2
+            n3 = await store.migrate_cold_once(max_age_seconds=60.0, batch_size=2, now=now)
+            assert n3 == 1, f"末批应迁 1(剩 1);实际 {n3}"
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM trace_cold").fetchone()[0] == 5
+        assert conn.execute("SELECT COUNT(*) FROM trace_hot").fetchone()[0] == 0
+
+
+def test_migrate_cold_zero_old_rows_noop(tmp_path):
+    """A5:无老行 → 迁 0,cold 空,hot 不变(空操作不报错)。"""
+    import sqlite3
+
+    now = _dt.datetime(2026, 6, 20, 10, 1, 0, tzinfo=_UTC)
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            await _insert_hot(store, trace_id="new-1", created_at="2026-06-20T10:00:30+00:00")
+            n = await store.migrate_cold_once(max_age_seconds=60.0, now=now)
+            assert n == 0
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM trace_cold").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM trace_hot").fetchone()[0] == 1
+
+
+def test_migrate_cold_age_threshold_boundary_exclusive(tmp_path):
+    """A5:created_at == cutoff 不迁(< 严格);恰早一秒迁。"""
+    import sqlite3
+
+    # cutoff = now - 60s = 10:00:00。boundary 行 created_at=10:00:00 → 不迁;
+    # 早一秒 09:59:59 → 迁。
+    now = _dt.datetime(2026, 6, 20, 10, 1, 0, tzinfo=_UTC)
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        try:
+            await _insert_hot(store, trace_id="boundary", created_at="2026-06-20T10:00:00+00:00")
+            await _insert_hot(store, trace_id="just-before", created_at="2026-06-20T09:59:59+00:00")
+            n = await store.migrate_cold_once(max_age_seconds=60.0, now=now)
+            assert n == 1, f"仅 just-before 迁(boundary == cutoff 不迁);实际 {n}"
+        finally:
+            await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        cold = {r[0] for r in conn.execute("SELECT trace_id FROM trace_cold")}
+        hot = {r[0] for r in conn.execute("SELECT trace_id FROM trace_hot")}
+        assert cold == {"just-before"}
+        assert hot == {"boundary"}
+
+
+def test_cold_migrator_loop_migrates_and_stops(tmp_path):
+    """A5:run_cold_migrator_loop 后台周期迁移;stop_event 优雅停。"""
+    import sqlite3
+
+    async def body():
+        store = TraceStore(tmp_path / "trace.db")
+        await store.init()
+        # 老行(created_at 远早于 now),max_age=0 → 全部老行迁。
+        await _insert_hot(store, trace_id="old-1", created_at="2020-01-01T00:00:00+00:00")
+        stop = asyncio.Event()
+        task = asyncio.create_task(run_cold_migrator_loop(
+            store, stop, interval_seconds=0.05, max_age_seconds=0.0,
+        ))
+        # 等一两个 tick 让迁移发生(interval 50ms)。
+        await asyncio.sleep(0.2)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+        await store.close()
+
+    _run(body())
+
+    with sqlite3.connect(tmp_path / "trace.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM trace_cold").fetchone()[0] == 1, "loop 应迁老行入 cold"
+        assert conn.execute("SELECT COUNT(*) FROM trace_hot").fetchone()[0] == 0
+
+
+def test_cold_migrator_loop_skips_uninitialized_store(tmp_path):
+    """A5:store 未 init 时 loop 不崩(跳过 tick,等 Cascade 懒初始化)。"""
+    store = TraceStore(tmp_path / "trace.db")  # 未 init
+
+    async def body():
+        stop = asyncio.Event()
+        task = asyncio.create_task(run_cold_migrator_loop(
+            store, stop, interval_seconds=0.01, max_age_seconds=60.0,
+        ))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)  # 不抛即过
+
+    _run(body())

@@ -13,15 +13,18 @@ reward / reward_committed_at / hop_attribution 只建字段(schema 预留):
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 import aiosqlite
+
+_LOG = logging.getLogger(__name__)
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS trace (
@@ -501,3 +504,100 @@ class TraceStore:
             )
             for r in rows
         ]
+
+    # ── A5(子片 0.5):trace 异步迁移 cold(WAL-02 热表有界)──────────────
+
+    async def migrate_cold_once(
+        self,
+        *,
+        max_age_seconds: float,
+        batch_size: int = 500,
+        now: Optional[datetime] = None,
+    ) -> int:
+        """把老热行从 trace_hot 迁 trace_cold,守 WAL-02 热表不膨胀。
+
+        单事务原子:① INSERT 最老的 batch_size 行(created_at < cutoff)从 hot 进 cold
+        (ON CONFLICT(trace_id) DO NOTHING,幂等防重复迁移);② DELETE 已确认落 cold
+        的老 hot 行(本批 + 任何 re-added 旧行)。返回从 hot 删除的行数(WAL-02 有界指标)。
+
+        cutoff = now - max_age_seconds;created_at < cutoff 严格(== 不迁)。
+        created_at 存 ISO 8601 UTC 串,字典序 = 时间序,串比较正确。
+
+        batch_size:限单次 INSERT 行数(渐进有界);剩余老行下次 tick 迁。DELETE 只删
+        已落 cold 的行,故 hot 单次最多减 batch_size(+ re-added 旧行,见下)。
+
+        **re-added 边界**(罕见):某行已迁 cold 后又被 commit 双写回 hot(同 trace_id
+        upsert)。本方法 INSERT ON CONFLICT 不重复入 cold,但 DELETE 会把它从 hot 删
+        (它老 + 已在 cold)→ deleted 可能 > 新增 cold 数。这对"hot 有界"是对的(老行
+        不该留 hot),返回值反映 hot 实际减量。
+
+        now:可注入固定时间(测试确定性);默认 datetime.now(timezone.utc)。
+        """
+        cutoff = (
+            (now if now is not None else datetime.now(timezone.utc))
+            - timedelta(seconds=max_age_seconds)
+        ).isoformat()
+        await self._db.execute("BEGIN")
+        try:
+            await self._db.execute(
+                "INSERT INTO trace_cold "
+                "(trace_id, correlation_id, parent_correlation_id, idempotency_key, "
+                " provider, result, latency, cost, reward, reward_committed_at, "
+                " hop_attribution, created_at, arm) "
+                "SELECT trace_id, correlation_id, parent_correlation_id, idempotency_key, "
+                "       provider, result, latency, cost, reward, reward_committed_at, "
+                "       hop_attribution, created_at, arm "
+                "FROM trace_hot WHERE created_at < ? "
+                "ORDER BY created_at ASC LIMIT ? "
+                "ON CONFLICT(trace_id) DO NOTHING",
+                (cutoff, batch_size),
+            )
+            async with self._db.execute(
+                "DELETE FROM trace_hot WHERE created_at < ? "
+                "AND trace_id IN (SELECT trace_id FROM trace_cold)",
+                (cutoff,),
+            ) as cur:
+                deleted = cur.rowcount
+            await self._db.execute("COMMIT")
+            return deleted if deleted is not None and deleted >= 0 else 0
+        except Exception:
+            await self._db.execute("ROLLBACK")
+            raise
+
+
+async def run_cold_migrator_loop(
+    store: "TraceStore",
+    stop_event: asyncio.Event,
+    *,
+    interval_seconds: float,
+    max_age_seconds: float,
+    batch_size: int = 500,
+) -> None:
+    """A5 后台循环:周期调 migrate_cold_once 把老热行迁 cold,stop_event 优雅停。
+
+    **非自动接线**:本函数是后台任务原语,由调用方(lifespan / 独立 runner / 测试)
+    `asyncio.create_task` 起、`stop_event.set()` 停。lifespan 自动接线 defer Phase B
+    (TraceStore 由 Cascade 懒初始化,非 lifespan;S1.0 零污染 lifespan 红线;Phase1
+    近零流量)。Phase B 启用:lifespan startup create_task 本循环、shutdown set+await。
+
+    **未初始化容忍**:store 未 init(Cascade 首请求前 _conn=None)时 migrate_cold_once
+    经 _db property 抛 RuntimeError → 本循环跳过该 tick(不崩),等 Cascade 懒初始化后
+    再迁。其他异常 log warning 不崩(迁移是软优化,不该拖垮请求路径)。
+
+    **cancellable sleep**:用 wait_for(stop_event.wait(), timeout=interval) 替代
+    asyncio.sleep——stop_event.set() 即时唤醒退出,不等满一个 interval。
+    """
+    while not stop_event.is_set():
+        try:
+            await store.migrate_cold_once(
+                max_age_seconds=max_age_seconds, batch_size=batch_size
+            )
+        except RuntimeError:
+            # store 未 init(Cascade 懒初始化前);跳过,下个 tick 重试。
+            pass
+        except Exception:
+            _LOG.warning("cold migration tick 失败(跳过,软优化不崩)", exc_info=True)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            pass
