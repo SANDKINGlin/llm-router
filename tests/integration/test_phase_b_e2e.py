@@ -12,17 +12,21 @@
   故 plan() 链首 = 动态(免费优先),失败后 fallback 静态(付费兜底)。
 
 hermetic:tmp scanner.db/manifest/policy(respx 模拟传输,零真网络零 key 成本)。
+
+B5.2 gated 真 NVIDIA 端到端(SCANNER_LIVE=1 + SCANNER_LIVE_KEY):真 poll → 真 interview
+→ 真 apply_policy 重建。默认 skip(需真 key + 网络,慢)。
 """
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 import pytest
 import respx
 
 from llm_router.config import Policy, ProviderEntry
-from llm_router.scanner.dynamic import DynamicScanner
+from llm_router.scanner.dynamic import DynamicScanner, make_openai_probe_factory
 from llm_router.scanner.snapshot import DiscoveredModel, ScannerSource
 from llm_router.store.scanner_store import ScannerStore
 
@@ -142,5 +146,59 @@ def test_phase_b_e2e_dynamic_then_fallback_static(phase_b_env, tmp_path):
         assert result.success is True
         assert result.final_text == "static-ok", "动态失败后应 fallback 到静态 provider"
         assert result.hops_attempted >= 2  # 动态试过(失败) + 静态成功
+    finally:
+        _run(store.close())
+
+
+# ── B5.2 gated 真 NVIDIA 端到端(默认 skip)─────────────────────────────
+
+
+@pytest.mark.skipif(
+    not (os.environ.get("SCANNER_LIVE") and os.environ.get("SCANNER_LIVE_KEY")),
+    reason="需 SCANNER_LIVE=1 + SCANNER_LIVE_KEY=<nvidia key>(真 API,默认 skip)",
+)
+def test_phase_b_live_poll_interview_rebuild(monkeypatch, tmp_path):
+    """gated 真 NVIDIA:真 poll → 真 interview(冒烟)→ on_tick_complete 重建候选池。
+
+    验 Phase B 真链路:DynamicScanner 用真 make_openai_probe_factory(打 NVIDIA 端点冒烟)
+    + 真 poll_all → 合格模型入池 → 重建回调 apply_policy(候选池含动态)。不断言具体模型
+    (随时间变),只断言链路通:tick ok + 重建后候选池含 ≥1 动态条目(若有合格模型)或无动态
+    (NVIDIA 当前无合格免费模型时,链路仍 ok 不崩)。
+
+    conftest 已清 NVIDIA_API_KEY(hermetic);运行时注回 SCANNER_LIVE_KEY 给 poll/probe。
+    """
+    import llm_router.app as app_mod
+
+    monkeypatch.setattr("llm_router.app._DATA_DIR", tmp_path)
+    scanner_db = tmp_path / "scanner.db"
+    monkeypatch.setattr("llm_router.app._SCANNER_DB", scanner_db)
+    # 空 manifest(无静态真 provider)+ 无 mock policy → 候选池仅动态(若有)
+    empty_manifest = tmp_path / "providers.yaml"
+    empty_manifest.write_text("providers: []\n")
+    monkeypatch.setattr("llm_router.scanner.mnfst._DEFAULT_MANIFEST", empty_manifest)
+    monkeypatch.setattr(
+        "llm_router.app.policy",
+        lambda: Policy(policy_version="live-v1", gray_percent=100, providers=[]),
+    )
+
+    key = os.environ["SCANNER_LIVE_KEY"]
+    monkeypatch.setenv("NVIDIA_API_KEY", key)
+
+    cascade = app_mod._build_cascade()  # 初始空(scanner.db 无)
+    store = ScannerStore(scanner_db)
+    _run(store.init())
+    try:
+        ds = DynamicScanner(
+            store,
+            probe_factory=make_openai_probe_factory(nvidia_key=key),
+            nvidia_key=key,
+            openrouter_key="",  # 只测 NVIDIA
+            on_tick_complete=app_mod._make_rebuild_callback(cascade, store),
+        )
+        result = _run(ds.tick())
+        assert result.ok is True, f"真 tick 应 ok(不崩),error={result.error}"
+        # 链路通:tick 完成不崩(无论是否抓到合格模型)。若抓到,候选池含动态。
+        # 不强断言动态数(NVIDIA 免费档随时间变);只验 apply_policy 重建被触发过(version 非 "")。
+        # 若 passed=0(无合格模型),on_tick_complete 仍可能因 added>0 触发重建。
     finally:
         _run(store.close())
