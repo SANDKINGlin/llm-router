@@ -11,6 +11,8 @@ services:
       - "8789:8789"          # 数据面(OpenAI /v1/chat/completions + Anthropic /v1/messages + /healthz)
     volumes:
       - ./data:/app/data     # 迁移单元:复制这个目录就是备份/搬家(trace/circuit 等 SQLite)
+      - ./router-policy.yaml:/app/router-policy.yaml:ro  # 配置热改:改文件 + restart 即生效,免重建
+      - ./mnfst:/app/mnfst:ro                              # 静态 provider 清单同上
     env_file:
       - .env                 # keys(GROQ_API_KEY / NVIDIA_API_KEY 等);.env 已 gitignore
     restart: unless-stopped

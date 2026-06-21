@@ -3,8 +3,15 @@
 # key 不写这里!只写环境变量名(api_key_env);真 key 放 .env / 环境变量(S2.3 build_adapters 读)。
 # 想接某个 provider:取消注释 + 在环境设对应 api_key_env 的值 → 重启 → 自动入候选池。
 # 缺 key 或注释掉 → 跳过(不崩),mock 始终在池兜底。
+#
+# ⚠️ 风控红线地图(2026-06-21,脏 IP 环境必读):
+#   ✅ 安全:OpenRouter(聚合器对代理 IP 宽容)+ 开权重免费模型(gpt-oss/nemotron/qwen 等,无专有风控)
+#   ✅ 安全:中国供应商调其【自家国产模型】(智谱 GLM / 火山豆包 / Moonshot 等,国内直连不走脏 IP)
+#   ⛔ 风控:海外直连供应商(NVIDIA NIM / Groq / Together / Fireworks 等)—— 脏 IP 易触发风控,同 NVIDIA 理
+#   ⛔ 风控:Gemini / Google / OpenAI 直连 —— IP 干净度敏感,全面避开(含经聚合器调这类专有模型)
+#   规则:海外只信 OpenRouter;国产模型只走其自家国产档;Gemini 类专有模型任何路径都避开。
 providers:
-  # ── Groq(免费档,fast,OpenAI 兼容)── 设 GROQ_API_KEY 后启用 ──
+  # ── Groq(海外直连,⛔ 风控:脏 IP 易触发,同 NVIDIA 理)── 默认不启用 ──
   - name: groq
     tier: fast
     quota: 1000000
@@ -15,7 +22,7 @@ providers:
     base_url: https://api.groq.com/openai/v1
     api_key_env: GROQ_API_KEY
 
-  # ── NVIDIA NIM(免费档,strong,OpenAI 兼容)── 设 NVIDIA_API_KEY 后启用 ──
+  # ── NVIDIA NIM(海外直连,⛔ 风控:脏 IP 易触发,默认不启用)── 设 NVIDIA_API_KEY 后启用(不推荐)──
   - name: nvidia
     tier: strong
     quota: 500000
