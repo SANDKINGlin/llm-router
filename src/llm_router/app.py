@@ -198,7 +198,7 @@ def _make_lifespan(
     probe_targets_resolver: "Callable[[], list[tuple[str, Provider]]] | list[tuple[str, Provider]]",
     *,
     interval_seconds: float = 300.0,
-    probe_timeout_seconds: float = 10.0,
+    probe_timeout_seconds: float = 30.0,  # 大模型(550B nemotron 等)冷启动+thinking 易超 10s,调大避探活 false-positive 误杀
     scanner_factory_resolver: "Optional[Callable[[], Callable[[Cascade, ScannerStore], Optional[DynamicScanner]]]]" = None,
     scanner_interval_seconds: float = 3600.0,
 ):

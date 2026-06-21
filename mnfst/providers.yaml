@@ -42,6 +42,6 @@ providers:
     cooldown_s: 30
     is_free: true
     cost_multiplier: 0.0
-    model: openai/gpt-oss-120b:free   # 开权重,China-safe;限流时 Cascade 429 回退兜底
+    model: nvidia/nemotron-3-ultra-550b-a55b:free   # 550B 大模型,支持 tool use,能驱动 agentic(Cline);开权重脏IP不风控;限流时 Cascade 429 回退
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY

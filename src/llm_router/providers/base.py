@@ -65,3 +65,14 @@ class Provider(ABC):
         """
         raise NotImplementedError
 
+    async def health_check(self) -> bool:
+        """轻量端点可达性检查(health-probe-lightweight)。返 True=端点可达,False=不可达。
+
+        默认 raise NotImplementedError = 无轻量探活能力(HealthProber 据此回退 complete() 探活,
+        向后兼容)。OpenAIProvider override 为 GET {base_url}/models(轻量,不消耗 token,不触发
+        大模型 thinking/限流排队),消除 complete() 探活对大模型的 false-positive 误杀。
+
+        探活目的是**端点可达性新鲜度信号**,不是内容生成能力——两者解耦(见 design D1)。
+        """
+        raise NotImplementedError
+

@@ -249,3 +249,111 @@ def test_probe_one_propagates_store_error():
             await prober.probe_one("ok", _OKProvider())
 
     _run(body())
+
+
+# ── H2.1 · probe_one 用 health_check + 回退 complete(health-probe-lightweight)──
+
+
+class _HealthCheckOKProvider(Provider):
+    """实现了 health_check(返 True)的 provider;complete 不该被调到。"""
+    name = "hc-ok"
+    complete_called = False
+
+    async def complete(self, prompt):
+        _HealthCheckOKProvider.complete_called = True
+        return "x", "m", None
+
+    async def health_check(self) -> bool:
+        return True
+
+
+class _HealthCheckDeadProvider(Provider):
+    """实现了 health_check(返 False)的 provider;complete 不该被调到。"""
+    name = "hc-dead"
+
+    async def complete(self, prompt):
+        return "x", "m", None
+
+    async def health_check(self) -> bool:
+        return False
+
+
+class _NoHealthCheckProvider(Provider):
+    """未实现 health_check(继承基类 raise NotImplementedError)→ 回退 complete 探活。"""
+    name = "no-hc"
+
+    async def complete(self, prompt):
+        return "pong", "m", None
+
+
+def test_probe_one_uses_health_check_when_implemented(tmp_path):
+    """provider 实现了 health_check → probe_one 用它(不调 complete);True→alive=True。"""
+    _HealthCheckOKProvider.complete_called = False
+
+    async def body():
+        store = HealthStore(tmp_path / "h.db")
+        await store.init()
+        try:
+            prober = HealthProber(store, [("hc-ok", _HealthCheckOKProvider())])
+            row = await prober.probe_one("hc-ok", _HealthCheckOKProvider())
+            assert row.alive is True
+            assert row.latency_ms is not None  # health_check 也记 latency
+            assert _HealthCheckOKProvider.complete_called is False  # 没回退到 complete
+        finally:
+            await store.close()
+    _run(body())
+
+
+def test_probe_one_health_check_false_records_dead(tmp_path):
+    """health_check 返 False → alive=False(端点不可达)。"""
+
+    async def body():
+        store = HealthStore(tmp_path / "h.db")
+        await store.init()
+        try:
+            prober = HealthProber(store, [("hc-dead", _HealthCheckDeadProvider())])
+            row = await prober.probe_one("hc-dead", _HealthCheckDeadProvider())
+            assert row.alive is False
+        finally:
+            await store.close()
+    _run(body())
+
+
+def test_probe_one_falls_back_to_complete_when_no_health_check(tmp_path):
+    """provider 未实现 health_check(NotImplementedError)→ 回退 complete() 探活(向后兼容)。"""
+
+    async def body():
+        store = HealthStore(tmp_path / "h.db")
+        await store.init()
+        try:
+            prober = HealthProber(store, [("no-hc", _NoHealthCheckProvider())], probe_timeout_seconds=2.0)
+            row = await prober.probe_one("no-hc", _NoHealthCheckProvider())
+            assert row.alive is True  # complete 成功 → 活
+            assert row.latency_ms is not None
+        finally:
+            await store.close()
+    _run(body())
+
+
+def test_probe_one_health_check_exception_records_dead(tmp_path):
+    """health_check 抛异常(非 NotImplementedError)→ alive=False(不崩,记死)。"""
+
+    class _BoomHC(Provider):
+        name = "boom-hc"
+
+        async def complete(self, prompt):
+            return "x", "m", None
+
+        async def health_check(self) -> bool:
+            raise RuntimeError("net down")
+
+    async def body():
+        store = HealthStore(tmp_path / "h.db")
+        await store.init()
+        try:
+            prober = HealthProber(store, [("boom-hc", _BoomHC())])
+            row = await prober.probe_one("boom-hc", _BoomHC())
+            assert row.alive is False
+        finally:
+            await store.close()
+    _run(body())

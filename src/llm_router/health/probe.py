@@ -61,7 +61,11 @@ class HealthProber:
         self._on_alive = on_alive
 
     async def probe_one(self, name: str, provider: Provider) -> HealthRow:
-        """ping 单个 provider,记 record_probe。complete 异常 → alive=False,不上抛。
+        """ping 单个 provider,记 record_probe。探活失败 → alive=False,不上抛。
+
+        health-probe-lightweight:优先用 provider.health_check()(轻量 GET /models,
+        不触发大模型 thinking/限流排队);未实现(NotImplementedError)→ 回退 complete(prompt)
+        探活(原有行为,向后兼容)。两种路径统一记 alive + latency。
 
         返回该 provider 当前行(成功 alive=True+latency_ms;超时/异常 alive=False+latency_ms=None)。
         record_probe(store 写)不在 try 内——store 基础设施失败应上抛,由 tick 暴露(#2)。
@@ -71,13 +75,10 @@ class HealthProber:
         alive = False
         latency_ms: Optional[float] = None
         try:
-            await asyncio.wait_for(
-                provider.complete(self._prompt), timeout=self._probe_timeout
-            )
-            alive = True
-            latency_ms = (time.perf_counter() - start) * 1000.0
+            alive = await self._probe_alive(provider)
+            latency_ms = (time.perf_counter() - start) * 1000.0 if alive else None
         except (asyncio.TimeoutError, ProviderError):
-            # expected:超时 / provider 硬失败(5xx/限流/连接)→ 静默记死(常态新鲜度信号)
+            # expected:回退 complete 路径的超时 / provider 硬失败 → 静默记死
             alive = False
             latency_ms = None
         except Exception:
@@ -94,6 +95,21 @@ class HealthProber:
                     "on_alive(%s) callback error; ignored (best-effort CB feed)", name, exc_info=True
                 )
         return row
+
+    async def _probe_alive(self, provider: Provider) -> bool:
+        """探活单 provider 返可达性。优先 health_check();NotImplementedError → 回退 complete()。
+
+        health-probe-lightweight D1/D3:health_check 轻量(GET /models),大模型不超时;
+        未实现的 provider(基类 raise NotImplementedError)回退 complete(prompt) 探活,向后兼容。
+        """
+        try:
+            return await provider.health_check()
+        except NotImplementedError:
+            # provider 无轻量探活能力 → 回退 complete() 探活(原有行为)
+            await asyncio.wait_for(
+                provider.complete(self._prompt), timeout=self._probe_timeout
+            )
+            return True
 
     async def tick(self) -> None:
         """并发 ping 全部注入 providers。空列表 no-op。
