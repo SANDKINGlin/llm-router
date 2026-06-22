@@ -3,7 +3,7 @@
 # S2.x 接真 provider 时填 base_url + api_key_env(环境变量名,非 key 本身,守 security.md)。
 version: 1
 policy_version: "0.1.0"
-gray_percent: 0            # Phase B 真流量测试:0=关动态池(只静态 openrouter+mock),面试质量门修复后改回 100
+gray_percent: 100          # scanner-interview-quality-gate:面试指令遵循门已修,启用动态池(合格免费模型入池被路由)
 providers:
   - name: mock
     tier: fast             # strong / medium / fast(pydantic Literal 校验)

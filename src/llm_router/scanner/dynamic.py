@@ -159,8 +159,12 @@ def make_openai_probe_factory(
         )
 
         async def probe(model_id: str) -> str:
-            text, _model, _usage = await provider.complete("ping")
-            return text
+            # scanner-interview-quality-gate:用指令遵循 prompt,interview_model 判 PONG。
+            # complete 接收 messages 结构(chat-protocol-passthrough)+ 返 ChatResult。
+            result = await provider.complete(
+                [{"role": "user", "content": "Reply with exactly: PONG"}]
+            )
+            return result.content
 
         return probe
 
