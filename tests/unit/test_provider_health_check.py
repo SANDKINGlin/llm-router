@@ -14,7 +14,7 @@ import httpx
 import pytest
 import respx
 
-from llm_router.providers.base import Provider
+from llm_router.providers.base import ChatResult, Provider
 from llm_router.providers.mock import MockProvider
 from llm_router.providers.openai import OpenAIProvider
 
@@ -38,8 +38,8 @@ class TestProviderBaseHealthCheck:
         class _Bare(Provider):
             name = "bare"
 
-            async def complete(self, prompt):
-                return "x", "m", None
+            async def complete(self, messages, *, tools=None, tool_choice=None):
+                return ChatResult(content="x", model="m", usage=None)
 
         bare = _Bare()
         with pytest.raises(NotImplementedError):

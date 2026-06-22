@@ -30,7 +30,7 @@ from llm_router.api.cost_gate import CostGate
 from llm_router.api.policy_enforcer import PolicyEnforcer
 from llm_router.api.strategy import RoutingStrategy
 from llm_router.config import ProviderEntry
-from llm_router.providers.base import Provider, ProviderError
+from llm_router.providers.base import ChatResult, Provider, ProviderError
 from llm_router.resilience.circuit_breaker import (
     CircuitBreaker,
     CircuitState,
@@ -56,10 +56,10 @@ class _StubOK(Provider):
         self._model = model
         self._counter = counter
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
-        return self._text, self._model, None
+        return ChatResult(content=self._text, model=self._model, usage=None)
 
 
 class _StubHardFail(Provider):
@@ -67,7 +67,7 @@ class _StubHardFail(Provider):
         self.name = name
         self._counter = counter
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         raise ProviderError(f"{self.name} 429")
@@ -82,13 +82,13 @@ class _ToggleProvider(Provider):
         self._calls = 0
         self._counter = counter
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         self._calls += 1
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         if self._calls <= self._fail_first_n:
             raise ProviderError(f"{self.name} burst {self._calls}")
-        return f"recovered-{self._calls}", "m", None
+        return ChatResult(content=f"recovered-{self._calls}", model="m", usage=None)
 
 
 class _FixedOrder(RoutingStrategy):
@@ -168,7 +168,7 @@ def test_burst_single_provider_does_not_cascade_avalanche(tmp_path):
         await cascade._health_store.init()
         try:
             for i in range(N):
-                r = await cascade.run("ping", correlation_id=f"cor-burst-{i}")
+                r = await cascade.run([{"role":"user","content":"ping"}], correlation_id=f"cor-burst-{i}")
                 assert r.success is True, f"r{i} 应 good 兜底,实际 {r}"
         finally:
             await cascade._health_store.close()
@@ -215,7 +215,7 @@ def test_burst_all_providers_returns_global_open_finite(tmp_path):
             results = []
             for i in range(30):
                 results.append(
-                    await cascade.run("ping", correlation_id=f"cor-globalburst-{i}")
+                    await cascade.run([{"role":"user","content":"ping"}], correlation_id=f"cor-globalburst-{i}")
                 )
             return results
         finally:
@@ -392,18 +392,18 @@ def test_cascade_routes_through_half_open_probe_recovers(tmp_path):
         try:
             # 前 3 次请求让 toggle 失败 → trip
             for i in range(3):
-                r = await cascade.run("ping", correlation_id=f"cor-half-{i}")
+                r = await cascade.run([{"role":"user","content":"ping"}], correlation_id=f"cor-half-{i}")
                 assert r.success is False
             assert breaker.get_key_state("toggle", "k-t").state == CircuitState.OPEN
 
             # cooldown 内:第 4 次请求被 key_open 拒
-            r4 = await cascade.run("ping", correlation_id="cor-half-3")
+            r4 = await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-half-3")
             assert r4.success is False
             assert r4.last_reason == "key_open"
 
             # 推进时间到 cooldown 之后
             breaker._now_override = 31.0
-            r5 = await cascade.run("ping", correlation_id="cor-half-4")
+            r5 = await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-half-4")
             return r5
         finally:
             await cascade._health_store.close()

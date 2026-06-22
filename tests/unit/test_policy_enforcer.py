@@ -26,7 +26,7 @@ from llm_router.api.policy_enforcer import (
 )
 from llm_router.api.strategy import RoutingStrategy
 from llm_router.config import ProviderEntry
-from llm_router.providers.base import Provider
+from llm_router.providers.base import ChatResult, Provider
 from llm_router.resilience.circuit_breaker import CircuitBreaker
 from llm_router.store.trace import TraceStore
 
@@ -298,9 +298,9 @@ class _CountingProvider(Provider):
         self.name = name
         self.calls = 0
 
-    async def complete(self, prompt: str) -> tuple[str, str, None]:
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         self.calls += 1
-        return f"from-{self.name}", f"m-{self.name}", None
+        return ChatResult(content=f"from-{self.name}", model=f"m-{self.name}", usage=None)
 
 
 class _FixedOrderStrategy(RoutingStrategy):
@@ -339,7 +339,7 @@ def test_cascade_compliance_gate_blocks_routing(tmp_path):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             return res
         finally:
             await store.close()
@@ -370,7 +370,7 @@ def test_cascade_compliant_enforcer_routes_normally(tmp_path):
 
     async def body():
         try:
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -394,7 +394,7 @@ def test_cascade_without_enforcer_unaffected(tmp_path):
 
     async def body():
         try:
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -436,7 +436,7 @@ def test_compliance_gate_runs_before_health_filter(tmp_path):
 
     async def body():
         try:
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -477,7 +477,7 @@ def test_phase_a_same_provider_two_keys_blocks_at_cascade(tmp_path):
 
     async def body():
         try:
-            return await cascade.run("ping", correlation_id="CID-PHASE-A")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID-PHASE-A")
         finally:
             await store.close()
 

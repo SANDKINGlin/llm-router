@@ -105,9 +105,11 @@ class HealthProber:
         try:
             return await provider.health_check()
         except NotImplementedError:
-            # provider 无轻量探活能力 → 回退 complete() 探活(原有行为)
+            # provider 无轻量探活能力 → 回退 complete() 探活(原有行为,chat-passthrough 后
+            # complete 接收 messages 列表,非 prompt 串)。
             await asyncio.wait_for(
-                provider.complete(self._prompt), timeout=self._probe_timeout
+                provider.complete([{"role": "user", "content": self._prompt}]),
+                timeout=self._probe_timeout,
             )
             return True
 

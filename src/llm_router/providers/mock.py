@@ -5,7 +5,9 @@ S2.x 接真 provider 后,路由层优先选真 provider,mock 仅测试用。
 """
 from __future__ import annotations
 
-from .base import Provider, Usage
+from typing import Optional
+
+from .base import ChatResult, Provider
 
 _CANNED = "[mock] llm-router skeleton OK — canned response, not a real model."
 
@@ -13,6 +15,15 @@ _CANNED = "[mock] llm-router skeleton OK — canned response, not a real model."
 class MockProvider(Provider):
     name = "mock"
 
-    async def complete(self, prompt: str) -> tuple[str, str, Usage | None]:
-        # mock 不消耗真 token → usage=None(Cascade 跳过 token_ledger 记账)。
-        return _CANNED, "mock-skeleton", None
+    async def complete(
+        self,
+        messages: list[dict],
+        *,
+        tools: Optional[list] = None,
+        tool_choice: Optional[str] = None,
+    ) -> ChatResult:
+        """canned 假响应(chat-protocol-passthrough 新签名)。忽略 tools(无真实工具调用)。
+
+        mock 不消耗真 token → usage=None(Cascade 跳过 token_ledger 记账);tool_calls=None(无工具)。
+        """
+        return ChatResult(content=_CANNED, model="mock-skeleton", usage=None, tool_calls=None)

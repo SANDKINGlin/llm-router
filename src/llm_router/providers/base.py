@@ -37,6 +37,22 @@ class Usage:
         return self.prompt_tokens + self.completion_tokens
 
 
+@dataclass(frozen=True)
+class ChatResult:
+    """complete() 调用结果(chat-protocol-passthrough)。
+
+    content:模型回复文本(纯工具调用时可能空)。
+    model:实际响应的模型名(供 trace/ledger)。
+    usage:token 用量(可 None,部分 provider 不返)。
+    tool_calls:模型返回的 function call 列表(OpenAI 格式),无工具调用时 None。
+      agent(Cline 等)读此字段触发工具执行;None = 普通文本回复。
+    """
+    content: str
+    model: str
+    usage: Optional[Usage] = None
+    tool_calls: Optional[list] = None
+
+
 class ProviderError(RuntimeError):
     """provider 调用失败(可熔断:超时/5xx/限流/连接错误)。
 
@@ -58,8 +74,19 @@ class Provider(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def complete(self, prompt: str) -> tuple[str, str, Optional[Usage]]:
-        """返回 (响应文本, 模型名, token 用量)。usage=None 表示未报用量(跳过记账)。
+    async def complete(
+        self,
+        messages: list[dict],
+        *,
+        tools: Optional[list] = None,
+        tool_choice: Optional[str] = None,
+    ) -> ChatResult:
+        """chat completions 透传(chat-protocol-passthrough)。
+
+        messages:OpenAI 格式 [{"role":"system|user|assistant","content":"..."}],结构保留
+            (system role 独立,非拍平)。tools/tool_choice:function calling 定义,透传给 provider。
+        返回 ChatResult(content + model + usage + tool_calls)。模型返 tool_calls 时 tool_calls 非空
+        (agent 据此触发工具);普通文本回复 tool_calls=None。
 
         async:真 adapter 走异步 HTTP。失败抛 ProviderError(可熔断);其余异常上抛不吞。
         """

@@ -16,7 +16,7 @@ import pytest
 
 from llm_router.api.cascade import Cascade
 from llm_router.api.strategy import RoutingStrategy
-from llm_router.providers.base import Provider, ProviderError
+from llm_router.providers.base import ChatResult, Provider, ProviderError
 from llm_router.resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReason
 from llm_router.routing.hop import parse_attribution
 from llm_router.store.trace import TraceStore
@@ -50,14 +50,14 @@ class _FakeProvider(Provider):
         self._incomplete = incomplete  # True → 返空文本(残缺 → SOFT)
         self._counter = counter  # dict[name]->int,记录调用次数
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         if self._raises is not None:
             raise self._raises
         if self._incomplete:
-            return "", self._model, None
-        return self._text, self._model, None
+            return ChatResult(content="", model=self._model, usage=None)
+        return ChatResult(content=self._text, model=self._model, usage=None)
 
 
 class _FixedOrderStrategy(RoutingStrategy):
@@ -94,7 +94,7 @@ def test_success_on_first_hop(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -130,7 +130,7 @@ def test_fallback_on_hard_provider_error(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -162,7 +162,7 @@ def test_fallback_on_soft_incomplete_response(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -196,7 +196,7 @@ def test_fallback_skips_open_provider(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -231,7 +231,7 @@ def test_multi_hop_depth_attribution_monotonic(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -262,8 +262,8 @@ def test_idempotent_replay_not_counted_as_new_hop(tmp_path, monkeypatch):
 
     async def body():
         try:
-            r1 = await cascade.run("ping", correlation_id="CID")
-            r2 = await cascade.run("ping", correlation_id="CID")  # 同 CID → replay
+            r1 = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
+            r2 = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")  # 同 CID → replay
             chain = await store.get_chain("CID")
             return r1, r2, chain
         finally:
@@ -297,7 +297,7 @@ def test_global_open_freezes_all_providers(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -327,7 +327,7 @@ def test_total_retry_budget_six_hard_stop(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -364,7 +364,7 @@ def test_strategy_plan_determines_chain_order(tmp_path, monkeypatch):
 
     async def body():
         try:
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             chain = await store.get_chain("CID")
             return res, chain
         finally:
@@ -391,14 +391,14 @@ def test_non_provider_error_propagates_not_masked(tmp_path, monkeypatch):
     class _BuggyProvider(Provider):
         name = "pA"
 
-        async def complete(self, prompt):
+        async def complete(self, messages, *, tools=None, tool_choice=None):
             raise KeyError("simulated adapter bug")
 
     cascade, store = _cascade(tmp_path, breaker, strat, [_BuggyProvider()])
 
     async def body():
         try:
-            await cascade.run("ping", correlation_id="CID")
+            await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 

@@ -320,7 +320,10 @@ class _Message(BaseModel):
 class _OpenAIRequest(BaseModel):
     model: str = "mock"
     messages: list[_Message] = Field(default_factory=list)
-    # stream/tools/temperature 等:S2.x 接真 provider 时处理
+    # chat-protocol-passthrough:透传 tools/tool_choice 给 provider(function calling)。
+    tools: list | None = None
+    tool_choice: str | None = None
+    # stream/temperature 等:后续处理
 
 
 class _AnthropicRequest(BaseModel):
@@ -330,12 +333,29 @@ class _AnthropicRequest(BaseModel):
 
 
 def _extract_prompt(messages: list[_Message]) -> str:
-    """拍平 messages 成一个 prompt 串给 Cascade。"""
+    """拍平 messages 成一个 prompt 串(/v1/messages Anthropic 端点用,Phase1 范围 A 不改)。"""
     parts = []
     for m in messages:
         c = m.content if isinstance(m.content, str) else str(m.content)
         parts.append(f"{m.role}: {c}")
     return "\n".join(parts) or "ping"
+
+
+def _messages_to_dicts(messages: list[_Message]) -> list[dict]:
+    """_Message(pyantic)→ OpenAI 格式 dict 列表(chat-protocol-passthrough)。
+
+    保留 role 结构(system/user/assistant 分离,非拍平),供 Cascade.run 透传给 provider。
+    content 非 str 时(str 兼容旧)转 str;None → ""。
+    """
+    out: list[dict] = []
+    for m in messages:
+        c = m.content
+        if c is None:
+            c = ""
+        elif not isinstance(c, str):
+            c = str(c)
+        out.append({"role": m.role, "content": c})
+    return out
 
 
 def _extract_session_id(request: Request) -> str | None:
@@ -373,19 +393,29 @@ async def openai_chat(req: _OpenAIRequest, request: Request) -> dict:
 
     S2.1b:接 Cascade(prompt → strategy.plan 链 → 逐跳 complete + 熔断/完整性/幂等/hop)。
     S4.1:从 X-Session-Id / Authorization 派生 session_id 传 Cascade(灰度判定,可观测)。
+    chat-protocol-passthrough:透传 messages 结构 + tools/tool_choice 给 provider(function calling),
+    响应保留 tool_calls(若有),Cline 等 agent 据此触发工具执行。
     """
     result = await _cascade.run(
-        _extract_prompt(req.messages),
+        _messages_to_dicts(req.messages),
         correlation_id=uuid.uuid4().hex,
         session_id=_extract_session_id(request),
+        tools=req.tools,
+        tool_choice=req.tool_choice,
     )
+    # tool_calls 非空 → finish_reason="tool_calls"(agent 据此执行工具);否则 "stop"。
+    msg: dict = {"role": "assistant", "content": result.final_text or ""}
+    finish_reason = "stop"
+    if result.final_tool_calls:
+        msg["tool_calls"] = result.final_tool_calls
+        finish_reason = "tool_calls"
     return {
         "id": "chatcmpl-mock",
         "object": "chat.completion",
         "created": int(datetime.now(timezone.utc).timestamp()),
         "model": result.final_model or "mock",
         "choices": [
-            {"index": 0, "message": {"role": "assistant", "content": result.final_text or ""}, "finish_reason": "stop"}
+            {"index": 0, "message": msg, "finish_reason": finish_reason}
         ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
@@ -397,8 +427,10 @@ async def anthropic_messages(req: _AnthropicRequest, request: Request) -> dict:
 
     S2.1b:接 Cascade。S4.1:从 X-Session-Id / Authorization 派生 session_id 传 Cascade。
     """
+    # chat-protocol-passthrough:/v1/messages 也用 messages 结构(Phase1 范围 A 不透传 tools,
+    # CC function calling 后续同步改;但 run 签名要求 messages,故转 dict)。
     result = await _cascade.run(
-        _extract_prompt(req.messages),
+        _messages_to_dicts(req.messages),
         correlation_id=uuid.uuid4().hex,
         session_id=_extract_session_id(request),
     )

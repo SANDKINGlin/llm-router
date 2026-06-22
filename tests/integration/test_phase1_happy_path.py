@@ -35,7 +35,7 @@ from llm_router.api.gray import derive_session_id
 from llm_router.api.policy_enforcer import PolicyEnforcer
 from llm_router.api.strategy import RoutingStrategy
 from llm_router.config import ProviderEntry
-from llm_router.providers.base import Provider, Usage
+from llm_router.providers.base import ChatResult, Provider, Usage
 from llm_router.resilience.circuit_breaker import CircuitBreaker
 from llm_router.routing.hop import parse_attribution
 from llm_router.store.health_store import HealthStore
@@ -67,12 +67,12 @@ class _StubProvider(Provider):
         # OpenCode 子片2 MED #1:抓 prompt 验 _extract_prompt 真路径。
         self._prompts = prompts
 
-    async def complete(self, prompt: str):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         if self._prompts is not None:
-            self._prompts.append(prompt)
-        return self._text, self._model, self._usage
+            self._prompts.append(messages)
+        return ChatResult(content=self._text, model=self._model, usage=self._usage)
 
 
 class _SoftProvider(Provider):
@@ -95,10 +95,10 @@ class _SoftProvider(Provider):
         self._counter = counter
         self._usage = usage
 
-    async def complete(self, prompt: str):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
-        return "", "soft-model", self._usage  # text="" → is_complete False(SOFT_CONTENT)
+        return ChatResult(content="", model="soft-model", usage=self._usage)  # text="" → is_complete False(SOFT_CONTENT)
 
 
 class _FixedOrderStrategy(RoutingStrategy):
@@ -600,10 +600,10 @@ def test_extract_prompt_pipes_messages_to_provider(patched_app, tmp_path):
         },
     )
     assert r.status_code == 200
-    # _extract_prompt 拍平模式:role: content,以 \n 连接(见 app.py:_extract_prompt)
-    assert captured == ["system: be concise\nuser: ping-A"], (
-        f"prompt 透传断裂:provider 实收 {captured!r}"
-    )
+    # chat-protocol-passthrough:messages 结构透传(不拍平),provider 收到 list[dict] 保留 role
+    assert captured == [
+        [{"role": "system", "content": "be concise"}, {"role": "user", "content": "ping-A"}]
+    ], f"messages 透传断裂:provider 实收 {captured!r}"
 
 
 def test_extract_prompt_anthropic_path_also_pipes_messages(patched_app, tmp_path):
@@ -632,7 +632,8 @@ def test_extract_prompt_anthropic_path_also_pipes_messages(patched_app, tmp_path
         },
     )
     assert r.status_code == 200
-    assert captured == ["user: ping-B"]
+    # chat-protocol-passthrough:Anthropic 端点也用 messages 结构透传(不拍平)
+    assert captured == [[{"role": "user", "content": "ping-B"}]]
 
 
 # ──────────────────────────────────────────────────────────────────────────

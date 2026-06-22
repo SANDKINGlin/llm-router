@@ -142,7 +142,7 @@ def test_phase_b_e2e_dynamic_then_fallback_static(phase_b_env, tmp_path):
         # ⑥ 路由:动态(免费)排序首跳 → 500 HARD → fallback 静态(付费)→ 200 成功
         #    纯利用(chooser=1.0)→ 链首 = 动态(免费优先于付费静态)
         cascade._strategy._chooser = lambda: 1.0
-        result = _run(cascade.run("hi", correlation_id="e2e-c1"))
+        result = _run(cascade.run([{"role":"user","content":"hi"}], correlation_id="e2e-c1"))
         assert result.success is True
         assert result.final_text == "static-ok", "动态失败后应 fallback 到静态 provider"
         assert result.hops_attempted >= 2  # 动态试过(失败) + 静态成功

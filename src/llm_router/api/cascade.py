@@ -52,6 +52,7 @@ class CascadeResult:
     success: bool
     hops_attempted: int  # 实际调用过 provider.complete 的跳数(不含被 budget 拦的)
     last_reason: str
+    final_tool_calls: Optional[list] = None  # chat-protocol-passthrough:模型返 tool_calls 透传
 
 
 class Cascade:
@@ -219,17 +220,25 @@ class Cascade:
 
     async def run(
         self,
-        prompt: str,
+        messages: list[dict],
         *,
         correlation_id: str,
         session_id: str | None = None,
+        tools: Optional[list] = None,
+        tool_choice: Optional[str] = None,
     ) -> CascadeResult:
         """按 strategy.plan() 序跑 fallback 链。返回 CascadeResult。
+
+        chat-protocol-passthrough:接收 messages(OpenAI 格式)+ tools/tool_choice,透传给每跳
+        provider.complete。fallback = 换 provider 重试同一 messages+tools(完整请求载荷)。
 
         路由前:S2.8c hard-skip health.db 中 alive=False 的 key(_surviving_candidates),
         幸存者才进 plan() 字典序排序(spec Req 4)。每跳:acquire trace → 幂等 replay 返缓存
         → breaker 判(CB 先于探活,Req 3a)→ provider.complete → ProviderError(HARD)/
         is_complete False(SOFT_CONTENT)/ 成功。budget 门拦第 7 跳。
+
+        tool_calls 兼容:模型返 tool_calls(纯工具调用,content 可能空)→ 视为完整成功(不判
+        SOFT_CONTENT),tool_calls 透传进 CascadeResult.final_tool_calls。
 
         最先:S2.7 合规门(layer ①)——配置非合规(同 provider 多账号)→ 拒绝路由,
         不 init store、不 plan、不调 provider(check() 内已记合规日志)。
@@ -351,9 +360,11 @@ class Cascade:
                 continue
 
             # ⑥ 放行 → 调 provider(真 HTTP 经 adapter)。ProviderError → HARD。
-            #   S2.4:complete 返 3-tuple(text, model, usage)。
+            #   chat-protocol-passthrough:complete 返 ChatResult(content/model/usage/tool_calls)。
             try:
-                text, model, usage = await provider.complete(prompt)
+                result = await provider.complete(
+                    messages, tools=tools, tool_choice=tool_choice
+                )
             except ProviderError:
                 self._breaker.record_failure(name, key, TripReason.HARD)
                 await self._store.commit(
@@ -366,12 +377,18 @@ class Cascade:
                 parent_trace_id = out.trace_id
                 continue
             # 非 ProviderError(编程 bug)上抛不吞——不 trip 熔断、不掩盖(design 点2 DEFEND)。
+            text = result.content
+            model = result.model
+            usage = result.usage
+            tool_calls = result.tool_calls
 
             # ⑥.5 S2.4:token 用量记账(best-effort)。token 已消耗,先于完整性判定记。
             await self._record_usage(name, model, usage)
 
             # ⑦ 内容完整性:残缺 → 软失败(3 软 = 1 硬)。
-            if not is_complete(text, model):
+            #   chat-protocol-passthrough:tool_calls 非空 = 纯工具调用(content 可能空)= 完整成功,
+            #   不判 SOFT_CONTENT(防误熔断 function calling 响应)。
+            if tool_calls is None and not is_complete(text, model):
                 self._breaker.record_failure(name, key, TripReason.SOFT_CONTENT)
                 await self._store.commit(
                     trace_id=out.trace_id,
@@ -390,7 +407,9 @@ class Cascade:
                 result=text,
                 hop_attribution=attr.to_json(),
             )
-            return CascadeResult(text, model, True, attempted, attr.reason)
+            return CascadeResult(
+                text, model, True, attempted, attr.reason, final_tool_calls=tool_calls
+            )
 
         # 链耗尽,无一成功(未触发 budget 门,因列表先结束)。
         return CascadeResult(None, None, False, attempted, last_reason)

@@ -17,7 +17,7 @@ import asyncio
 
 from llm_router.api.cascade import Cascade
 from llm_router.api.strategy import RoutingStrategy
-from llm_router.providers.base import Provider
+from llm_router.providers.base import ChatResult, Provider
 from llm_router.resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReason
 from llm_router.store.health_store import HealthStore
 from llm_router.store.trace import TraceStore
@@ -50,12 +50,12 @@ class _FakeProvider(Provider):
         self._raises = raises  # ProviderError=硬失败
         self._counter = counter  # dict[name]->int
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         if self._raises is not None:
             raise self._raises
-        return self._text, self._model, None
+        return ChatResult(content=self._text, model=self._model, usage=None)
 
 
 class _FixedOrderStrategy(RoutingStrategy):
@@ -99,7 +99,7 @@ def test_run_hard_skips_dead_provider(tmp_path, monkeypatch):
                 health_store=health,
             )
             try:
-                return await cascade.run("ping", correlation_id="CID")
+                return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             finally:
                 await store.close()
         finally:
@@ -131,7 +131,7 @@ def test_run_keeps_never_probed_provider(tmp_path, monkeypatch):
                 health_store=health,
             )
             try:
-                return await cascade.run("ping", correlation_id="CID")
+                return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             finally:
                 await store.close()
         finally:
@@ -159,7 +159,7 @@ def test_filter_failopen_when_store_not_init(tmp_path, monkeypatch):
             health_store=health,
         )
         try:
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -178,7 +178,7 @@ def test_no_health_store_no_filtering(tmp_path, monkeypatch):
 
     async def body():
         try:
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -200,7 +200,7 @@ def test_run_empty_candidates_returns_failure_not_crash(tmp_path, monkeypatch):
 
     async def body():
         try:
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -238,7 +238,7 @@ def test_probe_alive_but_cb_open_still_skipped(tmp_path, monkeypatch):
                 health_store=health,
             )
             try:
-                return await cascade.run("ping", correlation_id="CID")
+                return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             finally:
                 await store.close()
         finally:

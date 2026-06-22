@@ -20,7 +20,7 @@ from llm_router.api.cascade import Cascade
 from llm_router.api.strategy import RoutingStrategy
 from llm_router.app import _make_lifespan
 from llm_router.health.probe import HealthProber
-from llm_router.providers.base import Provider, ProviderError
+from llm_router.providers.base import ChatResult, Provider, ProviderError
 from llm_router.resilience.circuit_breaker import CircuitBreaker
 from llm_router.store.health_store import HealthStore
 from llm_router.store.trace import TraceStore
@@ -33,14 +33,14 @@ def _run(coro):
 class _OKProvider(Provider):
     name = "ok"
 
-    async def complete(self, prompt):
-        return "pong", "ok-model", None
+    async def complete(self, messages, *, tools=None, tool_choice=None):
+        return ChatResult(content="pong", model="ok-model", usage=None)
 
 
 class _BoomProvider(Provider):
     name = "boom"
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         raise ProviderError("down")
 
 

@@ -46,7 +46,8 @@ def _provider(model="test-model"):
 def test_success_returns_text_and_model():
     """200 + 合法 chat completion → adapter 返 (content, model, usage);usage 取自 resp.usage。"""
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_OK_BODY))
-    text, model, usage = _run(_provider().complete("hello"))
+    _cr = _run(_provider().complete([{"role":"user","content":"hello"}]))
+    text, model, usage = _cr.content, _cr.model, _cr.usage
     assert text == "hello-back"
     assert model == "test-model"
     assert usage == Usage(prompt_tokens=1, completion_tokens=1)
@@ -58,7 +59,8 @@ def test_success_without_usage_returns_none():
     """响应无 usage 字段(部分 OpenRouter 模型不返)→ usage=None(fail-open,跳过记账)。"""
     body = {k: v for k, v in _OK_BODY.items() if k != "usage"}
     respx.post(_URL).mock(return_value=httpx.Response(200, json=body))
-    text, model, usage = _run(_provider().complete("hello"))
+    _cr = _run(_provider().complete([{"role":"user","content":"hello"}]))
+    text, model, usage = _cr.content, _cr.model, _cr.usage
     assert text == "hello-back"
     assert usage is None
 
@@ -72,7 +74,7 @@ def test_rate_limit_429_raises_provider_error():
         )
     )
     with pytest.raises(ProviderError):
-        _run(_provider().complete("hello"))
+        _run(_provider().complete([{"role":"user","content":"hello"}]))
 
 
 @respx.mock
@@ -84,7 +86,7 @@ def test_server_error_500_raises_provider_error():
         )
     )
     with pytest.raises(ProviderError):
-        _run(_provider().complete("hello"))
+        _run(_provider().complete([{"role":"user","content":"hello"}]))
 
 
 @respx.mock
@@ -95,14 +97,14 @@ def test_timeout_raises_provider_error():
     """
     respx.post(_URL).mock(side_effect=httpx.TimeoutException("timed out"))
     with pytest.raises(ProviderError):
-        _run(_provider().complete("hello"))
+        _run(_provider().complete([{"role":"user","content":"hello"}]))
 
 
 @respx.mock
 def test_request_payload_carries_prompt_and_model():
     """真 adapter 把 prompt 放进 messages、model 放进请求体(respx 捕获,验接线对)。"""
     route = respx.post(_URL).mock(return_value=httpx.Response(200, json=_OK_BODY))
-    _run(_provider(model="gpt-test").complete("translate this"))
+    _run(_provider(model="gpt-test").complete([{"role":"user","content":"translate this"}]))
     assert route.called, "adapter 必须真发了一次 HTTP"
     sent = route.calls.last.request.read()
     payload = sent.decode() if isinstance(sent, (bytes, bytearray)) else sent

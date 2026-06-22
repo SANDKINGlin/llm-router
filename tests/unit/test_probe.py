@@ -14,7 +14,7 @@ import sqlite3
 import pytest
 
 from llm_router.health.probe import HealthProber
-from llm_router.providers.base import Provider, ProviderError
+from llm_router.providers.base import ChatResult, Provider, ProviderError
 from llm_router.store.health_store import HealthStore
 
 
@@ -24,22 +24,22 @@ from llm_router.store.health_store import HealthStore
 class _OKProvider(Provider):
     name = "ok"
 
-    async def complete(self, prompt: str) -> tuple[str, str, None]:
-        return "pong", "ok-model", None
+    async def complete(self, messages, *, tools=None, tool_choice=None):
+        return ChatResult(content="pong", model="ok-model", usage=None)
 
 
 class _SlowProvider(Provider):
     name = "slow"
 
-    async def complete(self, prompt: str) -> tuple[str, str, None]:
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         await asyncio.sleep(10)  # 远超 probe_timeout
-        return "x", "y", None
+        return ChatResult(content="x", model="y", usage=None)
 
 
 class _ProviderErrorProvider(Provider):
     name = "boom"
 
-    async def complete(self, prompt: str) -> tuple[str, str, None]:
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         raise ProviderError("simulated 5xx")
 
 
@@ -48,7 +48,7 @@ class _BugProvider(Provider):
 
     name = "bug"
 
-    async def complete(self, prompt: str) -> tuple[str, str, None]:
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         raise RuntimeError("unexpected")
 
 
@@ -167,9 +167,9 @@ def test_run_loop_runs_until_stop_event(tmp_path):
             class _Count(Provider):
                 name = "c"
 
-                async def complete(self, prompt: str) -> tuple[str, str, None]:
+                async def complete(self, messages, *, tools=None, tool_choice=None):
                     calls.append(1)
-                    return "x", "m", None
+                    return ChatResult(content="x", model="m", usage=None)
 
             prober = HealthProber(
                 store, [("c", _Count())], interval_seconds=0.01, probe_timeout_seconds=1.0
@@ -259,9 +259,9 @@ class _HealthCheckOKProvider(Provider):
     name = "hc-ok"
     complete_called = False
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         _HealthCheckOKProvider.complete_called = True
-        return "x", "m", None
+        return ChatResult(content="x", model="m", usage=None)
 
     async def health_check(self) -> bool:
         return True
@@ -271,8 +271,8 @@ class _HealthCheckDeadProvider(Provider):
     """实现了 health_check(返 False)的 provider;complete 不该被调到。"""
     name = "hc-dead"
 
-    async def complete(self, prompt):
-        return "x", "m", None
+    async def complete(self, messages, *, tools=None, tool_choice=None):
+        return ChatResult(content="x", model="m", usage=None)
 
     async def health_check(self) -> bool:
         return False
@@ -282,8 +282,8 @@ class _NoHealthCheckProvider(Provider):
     """未实现 health_check(继承基类 raise NotImplementedError)→ 回退 complete 探活。"""
     name = "no-hc"
 
-    async def complete(self, prompt):
-        return "pong", "m", None
+    async def complete(self, messages, *, tools=None, tool_choice=None):
+        return ChatResult(content="pong", model="m", usage=None)
 
 
 def test_probe_one_uses_health_check_when_implemented(tmp_path):
@@ -341,8 +341,8 @@ def test_probe_one_health_check_exception_records_dead(tmp_path):
     class _BoomHC(Provider):
         name = "boom-hc"
 
-        async def complete(self, prompt):
-            return "x", "m", None
+        async def complete(self, messages, *, tools=None, tool_choice=None):
+            return ChatResult(content="x", model="m", usage=None)
 
         async def health_check(self) -> bool:
             raise RuntimeError("net down")

@@ -140,7 +140,7 @@ def test_cascade_routes_to_real_adapter(tmp_path):
     entries_map = {e.name: e for e in entries}
     strategy = EpsilonGreedy(entries_map, chooser=lambda: 1.0)  # 纯利用
     cascade = Cascade(store, breaker, strategy, cands, budget=6)
-    result = await_sync(cascade.run("hi", correlation_id="c1"))
+    result = await_sync(cascade.run([{"role":"user","content":"hi"}], correlation_id="c1"))
     assert result.success is False
     assert result.last_reason == "hard_failure"  # 429→ProviderError→HARD,链耗尽
 
@@ -180,7 +180,7 @@ def test_real_provider_preferred_over_mock_when_key_set(tmp_path):
     entries_map = {e.name: e for e in entries}
     strategy = EpsilonGreedy(entries_map, chooser=lambda: 1.0)  # 纯利用 → 必取链首
     cascade = Cascade(store, breaker, strategy, candidates, budget=6)
-    result = await_sync(cascade.run("hi", correlation_id="c1"))
+    result = await_sync(cascade.run([{"role":"user","content":"hi"}], correlation_id="c1"))
     assert result.success is True
     assert result.final_text == "real-ok", "真 provider 必须优先被调(非 mock)"
     assert "[mock]" not in (result.final_text or ""), "mock 不该在真 provider 可用时应答(B1)"

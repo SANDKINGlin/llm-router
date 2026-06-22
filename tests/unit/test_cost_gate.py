@@ -17,7 +17,7 @@ import asyncio
 from llm_router.api.cascade import Cascade
 from llm_router.api.cost_gate import CostGate
 from llm_router.api.strategy import RoutingStrategy
-from llm_router.providers.base import Provider, ProviderError, Usage
+from llm_router.providers.base import ChatResult, Provider, ProviderError, Usage
 from llm_router.resilience.circuit_breaker import CircuitBreaker
 from llm_router.store.token_ledger import LedgerStore
 from llm_router.store.trace import TraceStore
@@ -59,10 +59,10 @@ class _UsageProvider(Provider):
         self._usage = usage  # Usage 实例或 None
         self._counter = counter
 
-    async def complete(self, prompt):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
-        return self._text, f"m-{self.name}", self._usage
+        return ChatResult(content=self._text, model=f"m-{self.name}", usage=self._usage)
 
 
 # ── L1:CostGate 纯逻辑 ──────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ def test_cascade_skips_over_budget_provider(tmp_path):
                 ledger=ledger,
                 cost_gate=gate,
             )
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             return res
         finally:
             await store.close()
@@ -220,7 +220,7 @@ def test_cascade_records_usage_after_success(tmp_path):
                 ledger=ledger,
                 cost_gate=CostGate(ledger, quotas={"a": 1000}),
             )
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             total = await ledger.total("a")
             return res, total
         finally:
@@ -247,7 +247,7 @@ def test_cascade_usage_none_skips_recording(tmp_path):
                 [("a", _UsageProvider("a", usage=None), "k1")],
                 ledger=ledger,
             )
-            await cascade.run("ping", correlation_id="CID")
+            await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             return await ledger.total("a")
         finally:
             await store.close()
@@ -285,7 +285,7 @@ def test_cascade_ledger_write_failure_doesnt_break_request(tmp_path):
                 [("a", _UsageProvider("a", usage=Usage(1, 1)), "k1")],
                 ledger=boom,  # type: ignore[arg-type]
             )
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -307,7 +307,7 @@ def test_cascade_without_cost_gate_unaffected(tmp_path):
                 _FixedOrderStrategy(["a"]),
                 [("a", pa, "k1")],
             )  # 不传 ledger / cost_gate
-            return await cascade.run("ping", correlation_id="CID")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
         finally:
             await store.close()
 
@@ -344,7 +344,7 @@ def test_cost_gate_runs_within_surviving_candidates(tmp_path):
                 ledger=ledger,
                 cost_gate=gate,
             )
-            res = await cascade.run("ping", correlation_id="CID")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID")
             return res
         finally:
             await store.close()

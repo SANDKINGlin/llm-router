@@ -12,9 +12,11 @@ httpx timeout→APITimeoutError,三者均为 openai.APIError 子类,catch 基类
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import openai
 
-from .base import Provider, ProviderError, Usage
+from .base import ChatResult, Provider, ProviderError, Usage
 
 _HEALTH_CHECK_TIMEOUT = 8.0  # GET /models 轻量探活超时(秒,大模型 thinking/限流不触发)
 
@@ -70,20 +72,49 @@ class OpenAIProvider(Provider):
             # 超时/连接错误/任何异常 → 不可达(不抛,HealthProber 探活循环健壮不崩)
             return False
 
-    async def complete(self, prompt: str) -> tuple[str, str, Usage | None]:
+    async def complete(
+        self,
+        messages: list[dict],
+        *,
+        tools: Optional[list] = None,
+        tool_choice: Optional[str] = None,
+    ) -> ChatResult:
+        """chat completions 透传(chat-protocol-passthrough)。
+
+        保留 messages 结构(system/user 分离)+ 透传 tools/tool_choice 给 SDK
+        chat.completions.create。返 ChatResult(content + model + usage + tool_calls)。
+        模型返 tool_calls(function call)→ ChatResult.tool_calls 非空,agent 据此触发工具。
+        """
+        kwargs: dict = {"model": self.model, "messages": messages}
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
         try:
-            resp = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            resp = await self._client.chat.completions.create(**kwargs)
         except openai.APIError as exc:
             # D2(HERMES 共识):SDK 异常 → ProviderError → Cascade HARD。其余异常上抛不吞。
             raise ProviderError(
                 f"{self.name}: openai 调用失败 ({type(exc).__name__}): {exc}"
             ) from exc
-        content = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
+        content = msg.content or ""
+        tool_calls = msg.tool_calls if hasattr(msg, "tool_calls") else None
+        # SDK tool_calls 是对象列表,转 dict 供 JSON 序列化(端点响应)。
+        if tool_calls:
+            tool_calls = [self._tool_call_to_dict(tc) for tc in tool_calls]
         usage = self._extract_usage(resp)
-        return content, resp.model, usage
+        return ChatResult(content=content, model=resp.model, usage=usage, tool_calls=tool_calls)
+
+    @staticmethod
+    def _tool_call_to_dict(tc) -> dict:
+        """SDK tool_call 对象 → dict(OpenAI 格式,供 JSON 响应)。"""
+        fn = tc.function
+        return {
+            "id": tc.id,
+            "type": getattr(tc, "type", "function"),
+            "function": {"name": fn.name, "arguments": fn.arguments},
+        }
 
     @staticmethod
     def _extract_usage(resp) -> Usage | None:

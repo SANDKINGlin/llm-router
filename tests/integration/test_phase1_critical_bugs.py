@@ -29,7 +29,7 @@ from llm_router.api.cost_gate import CostGate
 from llm_router.api.policy_enforcer import PolicyEnforcer
 from llm_router.api.strategy import RoutingStrategy
 from llm_router.config import ProviderEntry
-from llm_router.providers.base import Provider, ProviderError
+from llm_router.providers.base import ChatResult, Provider, ProviderError
 from llm_router.resilience.circuit_breaker import CircuitBreaker
 from llm_router.routing.hop import parse_attribution
 from llm_router.store.health_store import HealthStore
@@ -60,12 +60,12 @@ class _FakeProvider(Provider):
         self._raises = raises
         self._counter = counter
 
-    async def complete(self, prompt: str):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         if self._raises is not None:
             raise self._raises
-        return self._text, self._model, None
+        return ChatResult(content=self._text, model=self._model, usage=None)
 
 
 class _FixedOrderStrategy(RoutingStrategy):
@@ -171,7 +171,7 @@ def test_bug_fr01_budget_exhausts_at_seventh_in_full_stack(tmp_path, monkeypatch
     async def body():
         try:
             await health.init()  # 全活,不 hard-skip
-            res = await cascade.run("ping", correlation_id="CID-fr01")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID-fr01")
             chain = await store.get_chain("CID-fr01")
             return res, chain
         finally:
@@ -241,7 +241,7 @@ def test_bug_fr02_hop_attribution_intact_after_health_skip(tmp_path, monkeypatch
         try:
             await health.init()
             await health.record_probe(provider="pB", latency_ms=None, alive=False)
-            res = await cascade.run("ping", correlation_id="CID-fr02")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID-fr02")
             chain = await store.get_chain("CID-fr02")
             return res, chain
         finally:
@@ -287,7 +287,7 @@ def test_bug_policy01_compliance_blocks_before_breaker_and_provider(tmp_path, mo
     async def body():
         try:
             await health.init()
-            res = await cascade.run("ping", correlation_id="CID-pol01")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID-pol01")
             return res
         finally:
             # 合规拦截先于 store 惰性 init,store 未 init → 跳过 close。
@@ -333,7 +333,7 @@ def test_bug_fallback01_dead_key_skipped_route_to_alive(tmp_path, monkeypatch):
             await health.init()
             await health.record_probe(provider="pDead", latency_ms=None, alive=False)
             await health.record_probe(provider="pAlive", latency_ms=10.0, alive=True)
-            res = await cascade.run("ping", correlation_id="CID-fb01")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="CID-fb01")
             chain = await store.get_chain("CID-fb01")
             return res, chain
         finally:

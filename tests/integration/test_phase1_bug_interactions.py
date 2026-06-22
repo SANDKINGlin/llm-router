@@ -38,7 +38,7 @@ from llm_router.api.cost_gate import CostGate
 from llm_router.api.policy_enforcer import PolicyEnforcer
 from llm_router.api.strategy import RoutingStrategy
 from llm_router.config import ProviderEntry
-from llm_router.providers.base import Provider, ProviderError, Usage
+from llm_router.providers.base import ChatResult, Provider, ProviderError, Usage
 from llm_router.resilience.circuit_breaker import CircuitBreaker, TripReason
 from llm_router.routing.hop import DEFAULT_RETRY_BUDGET, parse_attribution
 from llm_router.store.health_store import HealthStore
@@ -71,10 +71,10 @@ class _StubOK(Provider):
         self._usage = usage
         self._counter = counter
 
-    async def complete(self, prompt: str):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
-        return self._text, self._model, self._usage
+        return ChatResult(content=self._text, model=self._model, usage=self._usage)
 
 
 class _StubHardFail(Provider):
@@ -84,7 +84,7 @@ class _StubHardFail(Provider):
         self.name = name
         self._counter = counter
 
-    async def complete(self, prompt: str):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
         raise ProviderError(f"{self.name} down")
@@ -97,10 +97,10 @@ class _StubSoft(Provider):
         self.name = name
         self._counter = counter
 
-    async def complete(self, prompt: str):
+    async def complete(self, messages, *, tools=None, tool_choice=None):
         if self._counter is not None:
             self._counter[self.name] = self._counter.get(self.name, 0) + 1
-        return "", "soft-m", None
+        return ChatResult(content="", model="soft-m", usage=None)
 
 
 class _FixedOrder(RoutingStrategy):
@@ -192,7 +192,7 @@ def test_no_candidates_when_all_providers_dead_via_health(tmp_path):
             # 全部 provider 探活记死
             for name in ("p1", "p2"):
                 await health.record_probe(name, latency_ms=None, alive=False)
-            res = await cascade.run("ping", correlation_id="cor-no-cand")
+            res = await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-no-cand")
             return res
         finally:
             await health.close()
@@ -222,7 +222,7 @@ def test_budget_exhausted_after_six_hard_failures_stops_at_seventh(tmp_path):
     async def body():
         await health.init()
         try:
-            return await cascade.run("ping", correlation_id="cor-budget")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-budget")
         finally:
             await health.close()
 
@@ -260,7 +260,7 @@ def test_all_soft_content_chain_terminates_with_soft_content_reason(tmp_path):
     async def body():
         await health.init()
         try:
-            return await cascade.run("ping", correlation_id="cor-all-soft")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-all-soft")
         finally:
             await health.close()
 
@@ -290,7 +290,7 @@ def test_breaker_opens_key_after_three_consecutive_hard_failures(tmp_path):
         await health.init()
         try:
             for i in range(3):
-                await cascade.run("ping", correlation_id=f"cor-trip-{i}")
+                await cascade.run([{"role":"user","content":"ping"}], correlation_id=f"cor-trip-{i}")
             return breaker.get_key_state("bad", "k-bad")
         finally:
             await health.close()
@@ -333,7 +333,7 @@ def test_cascade_skips_pre_tripped_open_key_and_routes_to_good(tmp_path):
             # 关键是让 good ∈ _keys → 派生 global=CLOSED 而非 all-open-bad)
             breaker.record_failure("good", "k-good", TripReason.SOFT_CONTENT)
             assert breaker.get_key_state("good", "k-good").state.value == "closed"
-            return await cascade.run("ping", correlation_id="cor-skip")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-skip")
         finally:
             await health.close()
 
@@ -383,7 +383,7 @@ def test_cost_gate_blocks_provider_when_consumed_reaches_quota(tmp_path):
                 completion_tokens=40,
                 cost=None,
             )
-            return await cascade.run("ping", correlation_id="cor-cost-block")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-cost-block")
         finally:
             await health.close()
 
@@ -521,7 +521,7 @@ def test_compliance_check_runs_before_cost_gate(tmp_path):
     async def body():
         await health.init()
         try:
-            return await cascade.run("ping", correlation_id="cor-order")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-order")
         finally:
             await health.close()
 
@@ -574,7 +574,7 @@ def test_breaker_global_open_blocks_all_via_derived_aggregate(tmp_path):
                 assert ks.state.value == "open", (
                     f"key {n} 应已 OPEN,实际 {ks.state}"
                 )
-            return await cascade.run("ping", correlation_id="cor-global")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-global")
         finally:
             await health.close()
 
@@ -639,7 +639,7 @@ def test_cascade_run_after_three_accumulated_hard_failures_skips_bad(tmp_path):
             breaker.record_failure("good", "k-good", TripReason.SOFT_CONTENT)
             # 连续 3 请求,每次 bad 失败 1 次(HARD +1),good 兜底成功
             for i in range(3):
-                r = await cascade.run("ping", correlation_id=f"cor-acc-{i}")
+                r = await cascade.run([{"role":"user","content":"ping"}], correlation_id=f"cor-acc-{i}")
                 assert r.success is True, (
                     f"前 3 请求 good 兜底应成功,第 {i} 次 res={r}"
                 )
@@ -649,7 +649,7 @@ def test_cascade_run_after_three_accumulated_hard_failures_skips_bad(tmp_path):
             bad_calls_before = counter.get("bad", 0)
             assert bad_calls_before == 3
             # 第 4 请求:bad 应被 allow_request 拒,counter[bad] **不变**
-            r4 = await cascade.run("ping", correlation_id="cor-acc-4")
+            r4 = await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-acc-4")
             return r4, bad_calls_before
         finally:
             await health.close()
@@ -716,7 +716,7 @@ def test_no_candidates_via_cost_gate_quota_zero_distinct_from_health(tmp_path):
             # 显式 health.record_probe 全活(防隐式无信号 fail-open 误判)
             for n in ("p1", "p2"):
                 await health.record_probe(n, latency_ms=1.0, alive=True)
-            return await cascade.run("ping", correlation_id="cor-cost-zero")
+            return await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-cost-zero")
         finally:
             await health.close()
 
@@ -758,7 +758,7 @@ def test_breaker_global_open_caveat_resolved_record_success_setdefault(tmp_path)
             # 前 2 请求:bad fail(hf 1→2,仍 CLOSED)+ good 兜底成功
             # S1.0 修复后:good 第 1 次成功即 setdefault 入 _keys CLOSED
             for i in range(2):
-                r = await cascade.run("ping", correlation_id=f"cor-cav-{i}")
+                r = await cascade.run([{"role":"user","content":"ping"}], correlation_id=f"cor-cav-{i}")
                 assert r.success is True, f"r{i} good 应兜底成功,实际 {r}"
             assert breaker.get_key_state("bad", "k-bad").state.value == "closed"
             # S1.0 修复后核心断言:good 应入 _keys CLOSED(原 caveat 不在,翻面)
@@ -769,7 +769,7 @@ def test_breaker_global_open_caveat_resolved_record_success_setdefault(tmp_path)
             # 第 3 请求:bad 第 3 次 fail → OPEN at record_failure;接着 allow(good):
             #   _global_is_open() 看 _providers_with_keys()={bad,good},bad OPEN+good
             #   CLOSED → 不全 OPEN → False → good 放行 → 兜底成功(caveat 已闭合)
-            r3 = await cascade.run("ping", correlation_id="cor-cav-2")
+            r3 = await cascade.run([{"role":"user","content":"ping"}], correlation_id="cor-cav-2")
             return r3
         finally:
             await health.close()

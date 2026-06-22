@@ -254,7 +254,7 @@ class TestDynamicFailFallback:
 
         class _BoomDyn(Provider):
             name = "dyn-nvidia-fail"
-            async def complete(self, prompt):
+            async def complete(self, messages, *, tools=None, tool_choice=None):
                 raise ProviderError("dynamic provider down")
 
         entries = {
@@ -282,7 +282,7 @@ class TestDynamicFailFallback:
             candidates=candidates,
             budget=6,
         )
-        result = _run(cascade.run("hi", correlation_id="c1"))
+        result = _run(cascade.run([{"role":"user","content":"hi"}], correlation_id="c1"))
         assert result.success is True
         assert "[mock]" in (result.final_text or "")  # fallback 到 mock
         assert result.hops_attempted >= 2  # dyn 试过(失败) + mock 成功
