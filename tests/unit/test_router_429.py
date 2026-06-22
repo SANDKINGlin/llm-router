@@ -70,16 +70,17 @@ class TestCBRateLimitBackoff:
         """RATE_LIMIT + retry_after=5 → next_probe_at = now+5(精准,非 30×2ⁿ)。"""
         b = CircuitBreaker(tmp_path / "c.db", key_hard_threshold=1)
         b._now_override = 1000.0
+        b._jitter_fn = lambda: 0.0  # 零 jitter 确定性测试
         b.record_failure("p", "k", TripReason.RATE_LIMIT, retry_after=5.0)
         ks = b.get_key_state("p", "k")
         assert ks.state == CircuitState.OPEN
-        # next_probe_at ≈ 1000 + 5(+ jitter 0)→ 1005,非 1030(HARD 默认 30s)
-        assert ks.next_probe_at == 1005.0
+        assert ks.next_probe_at == 1005.0  # 1000 + 5,非 1030(HARD 默认 30s)
 
     def test_rate_limit_no_retry_after_falls_back_default(self, tmp_path):
         """RATE_LIMIT 但 retry_after=None → 回退默认窗口(30s)。"""
         b = CircuitBreaker(tmp_path / "c.db", key_hard_threshold=1)
         b._now_override = 1000.0
+        b._jitter_fn = lambda: 0.0
         b.record_failure("p", "k", TripReason.RATE_LIMIT, retry_after=None)
         ks = b.get_key_state("p", "k")
         assert ks.state == CircuitState.OPEN
@@ -89,6 +90,7 @@ class TestCBRateLimitBackoff:
         """HARD 仍 30s 起步(不读 retry_after)。"""
         b = CircuitBreaker(tmp_path / "c.db", key_hard_threshold=1)
         b._now_override = 1000.0
+        b._jitter_fn = lambda: 0.0
         b.record_failure("p", "k", TripReason.HARD, retry_after=5.0)  # HARD 忽略 retry_after
         ks = b.get_key_state("p", "k")
         assert ks.next_probe_at == 1030.0  # HARD 默认 30,非 5
