@@ -1,10 +1,10 @@
-"""Phase A · 最小 CLI(对应 OpenSpec spec/phase-a-cli)。
+"""llm-router CLI。
 
 用法:
-    python -m llm_router.cli test-provider [--mock] [--provider NAME]
+    llm-router serve [--port 8789] [--host 0.0.0.0] [--reload]   # 起 HTTP 服务
+    python -m llm_router.cli test-provider [--mock]               # 验证 provider(Phase A)
 
-Phase A 范围内只做 mock 模式(免烧真实额度);真实模式留 stub 入口,
-后续 Phase B 接入完整 ProviderRegistry 时再实装。
+serve:add-docker-packaging D5,pip install . 后纯 Python 起服务(不用 Docker)。
 """
 from __future__ import annotations
 
@@ -38,10 +38,16 @@ def _cmd_test_provider(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m llm_router.cli",
-        description="llm-router Phase A 最小 CLI",
+        prog="llm-router",
+        description="llm-router 智能路由层 CLI",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # serve:起 HTTP 服务(add-docker-packaging D5)
+    s = sub.add_parser("serve", help="起 HTTP 服务(默认 :8789)")
+    s.add_argument("--host", default="0.0.0.0")
+    s.add_argument("--port", type=int, default=8789)
+    s.add_argument("--reload", action="store_true", help="开发模式热重载")
 
     p = sub.add_parser("test-provider", help="验证 provider 连通性(默认 mock)")
     p.add_argument(
@@ -64,11 +70,26 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """serve 子命令:uvicorn 起 llm_router.app:app。"""
+    import uvicorn
+
+    uvicorn.run(
+        "llm_router.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。返回 exit code。"""
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "serve":
+        return _cmd_serve(args)
     if args.command == "test-provider":
         return _cmd_test_provider(args)
 
