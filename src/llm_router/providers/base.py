@@ -56,12 +56,21 @@ class ChatResult:
 class ProviderError(RuntimeError):
     """provider 调用失败(可熔断:超时/5xx/限流/连接错误)。
 
-    Cascade 视为 HARD(record_failure(TripReason.HARD))。残缺内容由 is_complete 刭 → SOFT_CONTENT
-    (不走异常,adapter 仍返回 (text, model, usage),空文本由 Cascade 的完整性检查兜底)。
-
-    TODO(S2.x):细分 RateLimit(429,可立即重试)/ Transient(5xx·超时)/ Permanent(不可恢复)。
-    Phase1 全归 HARD(用户 2026-06-15 AskUserQuestion 锁定映射;HERMES [CONSENSUS])。
+    router-429-rate-limit-backoff:加 status_code + retry_after。
+    Cascade 按 status_code 选 TripReason:429→RATE_LIMIT(精准退避 retry_after);
+    其余→HARD(30×2ⁿ 翻倍)。残缺内容 → SOFT_CONTENT(不走异常)。
     """
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        status_code: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        super().__init__(msg)
+        self.status_code = status_code
+        self.retry_after = retry_after  # 秒;429 时从 Retry-After header 提取
 
 
 class Provider(ABC):

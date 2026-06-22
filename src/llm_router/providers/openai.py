@@ -94,15 +94,9 @@ class OpenAIProvider(Provider):
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except openai.APIError as exc:
-            # D2(HERMES 共识):SDK 异常 → ProviderError → Cascade HARD。其余异常上抛不吞。
-            raise ProviderError(
-                f"{self.name}: openai 调用失败 ({type(exc).__name__}): {exc}"
-            ) from exc
+            # router-429-rate-limit-backoff:提取 status_code + retry_after(429 限流精准退避)
+            raise self._provider_error(exc) from exc
         except (json.JSONDecodeError, ValueError, KeyError, AttributeError) as exc:
-            # SDK 内部解析失败(provider 返非 JSON/截断响应/非标 schema)→ ProviderError HARD,
-            # 让 Cascade fallback 到下一跳,**而非冒泡到 cascade 抛 500**。
-            # 实测:openrouter 某些 reasoning 模型(nemotron-ultra)偶返破损 JSON → JSONDecodeError
-            # 应作 provider 失败处理(同 5xx),不是路由器 bug。
             raise ProviderError(
                 f"{self.name}: 响应解析失败 ({type(exc).__name__}): {str(exc)[:200]}"
             ) from exc
@@ -130,9 +124,7 @@ class OpenAIProvider(Provider):
         try:
             stream = await self._client.chat.completions.create(**kwargs)
         except openai.APIError as exc:
-            raise ProviderError(
-                f"{self.name}: 流式调用失败 ({type(exc).__name__}): {exc}"
-            ) from exc
+            raise self._provider_error(exc) from exc
         chat_id = f"chatcmpl-{self.name}"
         async for chunk in stream:
             # SDK chunk → OpenAI SSE dict(透传,Cline 按 OpenAI streaming 协议解析)
@@ -162,5 +154,31 @@ class OpenAIProvider(Provider):
             return None
         prompt = getattr(u, "prompt_tokens", 0) or 0
         completion = getattr(u, "completion_tokens", 0) or 0
-        # total 缺失时回退 prompt+completion(个别 provider 只给部分字段)。
         return Usage(prompt_tokens=prompt, completion_tokens=completion)
+
+    def _provider_error(self, exc: openai.APIError) -> ProviderError:
+        """openai.APIError → ProviderError,提取 status_code + retry_after(429 限流精准退避)。
+
+        429(RateLimitError):retry_after 从 SDK exc.retry_after 或 response.headers['Retry-After'] 取(秒)。
+        其他 APIError:status_code 从 exc.status_code 取(5xx/4xx),retry_after=None。
+        """
+        status_code = getattr(exc, "status_code", None)
+        retry_after: Optional[float] = None
+        if status_code == 429:
+            # openai SDK RateLimitError 自带 retry_after(秒);缺失则从 response header 解析
+            ra = getattr(exc, "retry_after", None)
+            if ra is None:
+                resp = getattr(exc, "response", None)
+                if resp is not None:
+                    hdr = resp.headers.get("Retry-After") if hasattr(resp, "headers") else None
+                    if hdr:
+                        try:
+                            ra = float(hdr)
+                        except (ValueError, TypeError):
+                            ra = None
+            retry_after = float(ra) if ra is not None else None
+        return ProviderError(
+            f"{self.name}: openai 调用失败 ({type(exc).__name__}): {exc}",
+            status_code=status_code,
+            retry_after=retry_after,
+        )

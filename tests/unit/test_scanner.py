@@ -142,7 +142,7 @@ def test_cascade_routes_to_real_adapter(tmp_path):
     cascade = Cascade(store, breaker, strategy, cands, budget=6)
     result = await_sync(cascade.run([{"role":"user","content":"hi"}], correlation_id="c1"))
     assert result.success is False
-    assert result.last_reason == "hard_failure"  # 429→ProviderError→HARD,链耗尽
+    assert result.last_reason == "rate_limited"  # router-429:429→RATE_LIMIT(精准退避),链耗尽
 
 
 def await_sync(coro):

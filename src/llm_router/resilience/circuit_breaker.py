@@ -48,6 +48,7 @@ class CircuitState(str, Enum):
 class TripReason(str, Enum):
     HARD = "hard"  # 超时/5xx/网络错误
     SOFT_CONTENT = "soft_content"  # 内容完整性软失败(详见 content_integrity.py)
+    RATE_LIMIT = "rate_limit"  # 429 限流:精准退避 retry_after(不翻倍,provider 没坏)
 
 
 @dataclass
@@ -236,7 +237,14 @@ class CircuitBreaker:
 
     # ---------- core API ----------
 
-    def record_failure(self, provider: str, key: str, reason: TripReason) -> None:
+    def record_failure(
+        self,
+        provider: str,
+        key: str,
+        reason: TripReason,
+        *,
+        retry_after: Optional[float] = None,
+    ) -> None:
         ks = self._keys.setdefault((provider, key), KeyState())
         now = self._now()
 
@@ -254,18 +262,23 @@ class CircuitBreaker:
         # CLOSED(或 OPEN 再失败)累计硬失败计数
         if reason == TripReason.SOFT_CONTENT:
             ks.soft_failures += 1
-            # 整数除法换算(HERMES [CONSENSUS] 防浮点漂移):每 ratio 软 = 1 硬
             ks.hard_failures += ks.soft_failures // self.soft_to_hard_ratio
             ks.soft_failures = ks.soft_failures % self.soft_to_hard_ratio
-        else:  # HARD
+        else:  # HARD 或 RATE_LIMIT(都计硬失败,触发 OPEN)
             ks.hard_failures += 1
 
-        # 达硬阈值 → key OPEN(Gap1)
+        # 达硬阈值 → key OPEN
         if ks.hard_failures >= self.key_hard_threshold and ks.state != CircuitState.OPEN:
             ks.state = CircuitState.OPEN
             ks.opened_at = now
             ks.half_open_failures = 0
-            ks.next_probe_at = now + self._recovery_window(0) + self._jitter_fn()
+            # router-429:RATE_LIMIT 用 retry_after 精准退避(不翻倍);缺失回退默认窗口。
+            # HARD 仍 30×2ⁿ 翻倍(provider 坏了,退避渐长)。
+            if reason == TripReason.RATE_LIMIT and retry_after is not None:
+                window = retry_after
+            else:
+                window = self._recovery_window(0)
+            ks.next_probe_at = now + window + self._jitter_fn()
         self._persist_key(provider, key, ks)
         # provider/global 派生,无需显式级联 trip。
 

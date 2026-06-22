@@ -365,14 +365,21 @@ class Cascade:
                 result = await provider.complete(
                     messages, tools=tools, tool_choice=tool_choice
                 )
-            except ProviderError:
-                self._breaker.record_failure(name, key, TripReason.HARD)
+            except ProviderError as exc:
+                # router-429:429 限流 → RATE_LIMIT 精准退避(retry_after);其余 → HARD 翻倍退避
+                if exc.status_code == 429:
+                    self._breaker.record_failure(
+                        name, key, TripReason.RATE_LIMIT, retry_after=exc.retry_after
+                    )
+                    last_reason = "rate_limited"
+                else:
+                    self._breaker.record_failure(name, key, TripReason.HARD)
+                    last_reason = "hard_failure"
                 await self._store.commit(
                     trace_id=out.trace_id,
                     result="",
                     hop_attribution=attr.to_json(),
                 )
-                last_reason = "hard_failure"
                 prev_provider = name
                 parent_trace_id = out.trace_id
                 continue
