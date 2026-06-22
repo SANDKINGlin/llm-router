@@ -103,3 +103,13 @@ class Provider(ABC):
         """
         raise NotImplementedError
 
+    async def complete_stream(self, messages, *, tools=None, tool_choice=None):
+        """真流式:yield OpenAI SSE chunk dict(ponytail:不自造 StreamChunk 抽象,SDK 格式直接透传)。
+
+        默认 raise NotImplementedError。OpenAIProvider override:SDK stream=True + async for yield。
+        app.py stream 分支挑首候选直接 pipe 到 SSE 响应;首 chunk 前失败回退非流式 _cascade.run。
+        """
+        raise NotImplementedError
+        # ponytail: 这 yield 是为了让类型检查知道这是 generator;实际永不执行
+        yield {}  # pragma: no cover
+

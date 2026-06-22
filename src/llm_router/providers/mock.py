@@ -27,3 +27,16 @@ class MockProvider(Provider):
         mock 不消耗真 token → usage=None(Cascade 跳过 token_ledger 记账);tool_calls=None(无工具)。
         """
         return ChatResult(content=_CANNED, model="mock-skeleton", usage=None, tool_calls=None)
+
+    async def complete_stream(self, messages, *, tools=None, tool_choice=None):
+        """fake 流式(测试用):canned 拆 2 chunk + finish,模拟 SSE 流。"""
+        yield {
+            "id": "chatcmpl-mock", "object": "chat.completion.chunk", "created": 0,
+            "model": "mock-skeleton",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": _CANNED}, "finish_reason": None}],
+        }
+        yield {
+            "id": "chatcmpl-mock", "object": "chat.completion.chunk", "created": 0,
+            "model": "mock-skeleton",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }

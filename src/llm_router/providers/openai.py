@@ -115,6 +115,35 @@ class OpenAIProvider(Provider):
         usage = self._extract_usage(resp)
         return ChatResult(content=content, model=resp.model, usage=usage, tool_calls=tool_calls)
 
+    async def complete_stream(self, messages, *, tools=None, tool_choice=None):
+        """真流式(chat-stream-true-streaming,ponytail 版):SDK stream=True 直接透传 chunk。
+
+        yield OpenAI chat.completion.chunk 格式 dict(id/object/created/model/choices),app.py
+        直接 `data: {json}\n\n` 包发 SSE。tool_call delta / finish_reason 全透传(SDK 累积语义,
+        Cline 自己拼)。首 chunk 前 SDK 抛 APIError → ProviderError(让上层回退非流式 run)。
+        """
+        kwargs: dict = {"model": self.model, "messages": messages, "stream": True}
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        try:
+            stream = await self._client.chat.completions.create(**kwargs)
+        except openai.APIError as exc:
+            raise ProviderError(
+                f"{self.name}: 流式调用失败 ({type(exc).__name__}): {exc}"
+            ) from exc
+        chat_id = f"chatcmpl-{self.name}"
+        async for chunk in stream:
+            # SDK chunk → OpenAI SSE dict(透传,Cline 按 OpenAI streaming 协议解析)
+            yield {
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "created": getattr(chunk, "created", 0),
+                "model": getattr(chunk, "model", self.model),
+                "choices": [c.model_dump(exclude_none=True) for c in (chunk.choices or [])],
+            }
+
     @staticmethod
     def _tool_call_to_dict(tc) -> dict:
         """SDK tool_call 对象 → dict(OpenAI 格式,供 JSON 响应)。"""

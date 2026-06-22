@@ -361,6 +361,23 @@ def _messages_to_dicts(messages: list[_Message]) -> list[dict]:
     return out
 
 
+async def _pick_stream_provider(session_id: str | None):
+    """真流式挑首幸存候选(chat-stream-true-streaming,ponytail 版)。
+
+    复用 Cascade 的 _surviving_candidates(health+cost 过滤)+ strategy.plan 取链首。
+    返 (name, provider) 的 provider 实例。无幸存者 → raise(让端点 fallback 非流式)。
+    ponytail:不复制 CB/灰度逻辑,直接复用 Cascade 内部方法。
+    """
+    await _cascade._ensure_store()
+    survivors = await _cascade._surviving_candidates()
+    if not survivors:
+        raise RuntimeError("no surviving candidate for stream")
+    chain = _cascade._strategy.plan(survivors, {"session_id": session_id})
+    name = chain[0]
+    provider, _key = _cascade._providers[name]
+    return provider
+
+
 def _extract_session_id(request: Request) -> str | None:
     """S4.1:从请求派生 session_id(D9 灰度切 agent,design line 25/128)。
 
@@ -399,45 +416,66 @@ async def openai_chat(req: _OpenAIRequest, request: Request):
     chat-protocol-passthrough:透传 messages 结构 + tools/tool_choice 给 provider(function calling),
     响应保留 tool_calls(若有),Cline 等 agent 据此触发工具执行。
 
-    stream 支持(Cline 默认 stream=true):内部仍非流式调 provider(Cascade fallback 完整请求载荷),
-    响应包装成单 chunk SSE(伪流式)。Cline 能正确解析。
+    stream 支持(Cline 默认 stream=true):真流式——挑首幸存候选直接 pipe provider.complete_stream
+    的 SDK chunk 到 SSE;首 chunk 前 ProviderError → 回退非流式 _cascade.run(走完整 fallback 链)
+    包成单 chunk SSE。首 chunk 已发后失败 → 流自然结束(Cline 自带 retry)。
     """
+    messages = _messages_to_dicts(req.messages)
+    created = int(datetime.now(timezone.utc).timestamp())
+    chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+    if req.stream:
+        import json as _json
+        from fastapi.responses import StreamingResponse
+        from .providers.base import ProviderError
+
+        async def _true_stream():
+            # 真流式:挑首幸存候选(health+cost+CB 过滤后 plan 链首),pipe SDK chunk 到 SSE。
+            # 首 chunk 前 ProviderError → 放弃流式,回退非流式 _cascade.run(完整 fallback)包单 chunk。
+            try:
+                provider = await _pick_stream_provider(_extract_session_id(request))
+                first_sent = False
+                async for chunk in provider.complete_stream(
+                    messages, tools=req.tools, tool_choice=req.tool_choice
+                ):
+                    first_sent = True
+                    yield f"data: {_json.dumps(chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            except (ProviderError, StopAsyncIteration, RuntimeError):
+                if first_sent:
+                    # 首 chunk 已发,流中途失败 → 结束流(不 fallback,已发数据无法撤回)
+                    yield "data: [DONE]\n\n"
+                    return
+                # 首 chunk 前失败 → 回退非流式 _cascade.run,包成单 chunk SSE
+            # 非流式 fallback
+            result = await _cascade.run(
+                messages, correlation_id=uuid.uuid4().hex,
+                session_id=_extract_session_id(request),
+                tools=req.tools, tool_choice=req.tool_choice,
+            )
+            delta: dict = {"role": "assistant", "content": result.final_text or ""}
+            fr = "tool_calls" if result.final_tool_calls else "stop"
+            if result.final_tool_calls:
+                delta["tool_calls"] = result.final_tool_calls
+            yield f"data: {_json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': result.final_model or 'mock', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]})}\n\n"
+            yield f"data: {_json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': result.final_model or 'mock', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': fr}]})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_true_stream(), media_type="text/event-stream")
+
+    # 非流式:走完整 Cascade.run(fallback/熔断/完整性全生效)
     result = await _cascade.run(
-        _messages_to_dicts(req.messages),
+        messages,
         correlation_id=uuid.uuid4().hex,
         session_id=_extract_session_id(request),
         tools=req.tools,
         tool_choice=req.tool_choice,
     )
-    # tool_calls 非空 → finish_reason="tool_calls"(agent 据此执行工具);否则 "stop"。
     content = result.final_text or ""
     model_name = result.final_model or "mock"
     tool_calls = result.final_tool_calls
     finish_reason = "tool_calls" if tool_calls else "stop"
-    created = int(datetime.now(timezone.utc).timestamp())
-    chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-
-    if req.stream:
-        # 伪流式:单 chunk SSE(role + content + finish)+ [DONE]。Cline OpenAI-compat 兼容。
-        import json as _json
-        from fastapi.responses import StreamingResponse
-
-        async def _sse_gen():
-            # chunk 1: role + 完整 content(单帧,内部非流式所以无法逐 token 拆)
-            delta: dict = {"role": "assistant", "content": content}
-            if tool_calls:
-                delta["tool_calls"] = tool_calls
-            chunk = {
-                "id": chat_id, "object": "chat.completion.chunk", "created": created,
-                "model": model_name,
-                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
-            }
-            yield f"data: {_json.dumps(chunk)}\n\n"
-            # chunk 2: finish
-            yield f"data: {_json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n"
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(_sse_gen(), media_type="text/event-stream")
 
     # 非流式响应(向后兼容,curl/旧客户端)
     msg: dict = {"role": "assistant", "content": content}
