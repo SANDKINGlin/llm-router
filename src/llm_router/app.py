@@ -323,7 +323,10 @@ class _OpenAIRequest(BaseModel):
     # chat-protocol-passthrough:透传 tools/tool_choice 给 provider(function calling)。
     tools: list | None = None
     tool_choice: str | None = None
-    # stream/temperature 等:后续处理
+    # Cline 等 agent 默认 stream=true,期望 SSE 响应。Phase B 真流量修复:支持伪流式
+    # (路由器内部非流式调 provider,响应包装成单 chunk SSE,Cline 能解析)。
+    stream: bool | None = None
+    # temperature/top_p 等:Phase 2 透传
 
 
 class _AnthropicRequest(BaseModel):
@@ -388,13 +391,16 @@ def healthz() -> JSONResponse:
 
 
 @app.post("/v1/chat/completions")
-async def openai_chat(req: _OpenAIRequest, request: Request) -> dict:
+async def openai_chat(req: _OpenAIRequest, request: Request):
     """OpenAI 协议入口。经 Cascade(④)回退编排打到候选 provider 链。Roo/Codex 走这个。
 
     S2.1b:接 Cascade(prompt → strategy.plan 链 → 逐跳 complete + 熔断/完整性/幂等/hop)。
     S4.1:从 X-Session-Id / Authorization 派生 session_id 传 Cascade(灰度判定,可观测)。
     chat-protocol-passthrough:透传 messages 结构 + tools/tool_choice 给 provider(function calling),
     响应保留 tool_calls(若有),Cline 等 agent 据此触发工具执行。
+
+    stream 支持(Cline 默认 stream=true):内部仍非流式调 provider(Cascade fallback 完整请求载荷),
+    响应包装成单 chunk SSE(伪流式)。Cline 能正确解析。
     """
     result = await _cascade.run(
         _messages_to_dicts(req.messages),
@@ -404,16 +410,44 @@ async def openai_chat(req: _OpenAIRequest, request: Request) -> dict:
         tool_choice=req.tool_choice,
     )
     # tool_calls 非空 → finish_reason="tool_calls"(agent 据此执行工具);否则 "stop"。
-    msg: dict = {"role": "assistant", "content": result.final_text or ""}
-    finish_reason = "stop"
-    if result.final_tool_calls:
-        msg["tool_calls"] = result.final_tool_calls
-        finish_reason = "tool_calls"
+    content = result.final_text or ""
+    model_name = result.final_model or "mock"
+    tool_calls = result.final_tool_calls
+    finish_reason = "tool_calls" if tool_calls else "stop"
+    created = int(datetime.now(timezone.utc).timestamp())
+    chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+    if req.stream:
+        # 伪流式:单 chunk SSE(role + content + finish)+ [DONE]。Cline OpenAI-compat 兼容。
+        import json as _json
+        from fastapi.responses import StreamingResponse
+
+        async def _sse_gen():
+            # chunk 1: role + 完整 content(单帧,内部非流式所以无法逐 token 拆)
+            delta: dict = {"role": "assistant", "content": content}
+            if tool_calls:
+                delta["tool_calls"] = tool_calls
+            chunk = {
+                "id": chat_id, "object": "chat.completion.chunk", "created": created,
+                "model": model_name,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+            yield f"data: {_json.dumps(chunk)}\n\n"
+            # chunk 2: finish
+            yield f"data: {_json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_sse_gen(), media_type="text/event-stream")
+
+    # 非流式响应(向后兼容,curl/旧客户端)
+    msg: dict = {"role": "assistant", "content": content}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
     return {
-        "id": "chatcmpl-mock",
+        "id": chat_id,
         "object": "chat.completion",
-        "created": int(datetime.now(timezone.utc).timestamp()),
-        "model": result.final_model or "mock",
+        "created": created,
+        "model": model_name,
         "choices": [
             {"index": 0, "message": msg, "finish_reason": finish_reason}
         ],

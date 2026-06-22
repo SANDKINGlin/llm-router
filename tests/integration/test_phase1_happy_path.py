@@ -230,7 +230,8 @@ def test_openai_endpoint_e2e_happy_path_writes_trace(patched_app, tmp_path):
     assert r.status_code == 200, r.text
     body = r.json()
     # OpenCode 子片2 MED #6 部分接受:补 id 字段断言(响应塑形契约)。
-    assert body["id"] == "chatcmpl-mock"
+    # chat-stream-support:id 改为 chatcmpl-<uuid 前缀>(标准 OpenAI 兼容,Cline 期望唯一 id)
+    assert body["id"].startswith("chatcmpl-")
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["content"] == "hello-A"
     assert body["choices"][0]["finish_reason"] == "stop"
