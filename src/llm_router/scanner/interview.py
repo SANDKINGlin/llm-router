@@ -31,14 +31,17 @@ from .tier_infer import label_tier
 
 _LOG = logging.getLogger(__name__)
 
-_DEFAULT_PROBE_TIMEOUT = 20.0
+_DEFAULT_PROBE_TIMEOUT = 10.0  # 10s 上限:慢模型(reasoning/小模型 thinking)直接 fail,不入池
 _DEFAULT_PROBE_PROMPT = "Reply with exactly: PONG"
 _DEFAULT_KEYWORD = "PONG"
-# 结构性非聊天模型 model_id 关键词(指令遵循过了也拒入池)。复用真实发现的垃圾模型模式。
+# 结构性非聊天 + 慢/差模型 model_id 关键词(指令遵循过了也拒入池)。
+# 压测 2026-06-22 实证:reasoning 模型 9.9-15.9s、1.2B 小模型答错,都该拒。
 _DEFAULT_BLACKLIST: tuple[str, ...] = (
     "safety", "-guard", "guard-", "llama-guard",
     "-vl", "-vl-", "vision",
     "openrouter/free", "openrouter/owl",  # 路由伪模型
+    "thinking", "reasoning",  # reasoning 模型慢(9.9-15.9s 实测)
+    "-1b", "-2b", "-3b", "mini",  # 小参数模型能力差(1.2B 实测答错)
 )
 
 ProbeFn = Callable[[str], "asyncio.Future | object"]

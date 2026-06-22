@@ -86,7 +86,7 @@ class TestTickFirstPoll:
                 ds = DynamicScanner(
                     store,
                     probe_factory=_probe_factory_passing(),
-                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b"), _nv("b-mini")]),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b"), _nv("b-large")]),
                     nvidia_key="k",
                     openrouter_key="k",
                 )
@@ -100,7 +100,7 @@ class TestTickFirstPoll:
                 assert nv.expired == 0
                 # 入库 active
                 active = await store.active_models()
-                assert {m.model_id for m in active} == {"a-70b", "b-mini"}
+                assert {m.model_id for m in active} == {"a-70b", "b-large"}
             finally:
                 await store.close()
         _run(body())
@@ -184,7 +184,7 @@ class TestTickDiffRemoved:
                 ds = DynamicScanner(
                     store,
                     probe_factory=_probe_factory_passing(),
-                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b"), _nv("b-mini")]),
+                    fetcher=_fetcher_returning(nv_models=[_nv("a-70b"), _nv("b-large")]),
                     nvidia_key="k",
                     openrouter_key="k",
                 )
@@ -396,7 +396,7 @@ class TestBuildDynamicAdapters:
 
     def test_name_stable_and_unique(self):
         """同 model_id 多次造 → 同名(稳定);不同 model → 不同名(唯一)。"""
-        models = [_nv("a-70b"), _nv("b-mini")]
+        models = [_nv("a-70b"), _nv("b-large")]
         cands = build_dynamic_adapters(models, nvidia_key="k")
         names = [c[0] for c in cands]
         assert len(names) == len(set(names))  # 唯一
@@ -578,7 +578,7 @@ class TestDynamicEntryToProviderEntry:
 
     def test_name_stable_and_unique_across_models(self):
         m1 = _nv("a-70b", tier="strong")
-        m2 = _nv("b-mini", tier="fast")
+        m2 = _nv("b-large", tier="fast")
         e1 = dynamic_entry_to_provider_entry(m1)
         e2 = dynamic_entry_to_provider_entry(m2)
         assert e1.name != e2.name
