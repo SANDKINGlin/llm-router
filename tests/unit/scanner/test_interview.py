@@ -49,11 +49,11 @@ def _probe_slow(delay, text="ok"):
 
 class TestInterviewModel:
     def test_non_empty_passes_with_tier_label(self):
-        result = _run(interview_model(_nv("nvidia/foo-70b", tier=None), probe=_probe_returning("hello world")))
+        result = _run(interview_model(_nv("nvidia/foo-70b", tier=None), probe=_probe_returning("PONG hello")))
         assert result.passed is True
         assert result.reason == "ok"
         assert result.model.tier == "strong"  # 关键词推断贴标
-        assert result.response_snippet == "hello world"
+        assert result.response_snippet == "PONG hello"
 
     def test_whitespace_only_fails_empty_content(self):
         result = _run(interview_model(_nv(), probe=_probe_returning("   \n  ")))
@@ -84,18 +84,18 @@ class TestInterviewModel:
 
     def test_existing_tier_preserved(self):
         """model.tier 已设(非 None)→ label_tier 保留,不覆盖。"""
-        result = _run(interview_model(_nv("nvidia/foo-70b", tier="fast"), probe=_probe_returning("ok")))
+        result = _run(interview_model(_nv("nvidia/foo-70b", tier="fast"), probe=_probe_returning("PONG")))
         assert result.model.tier == "fast"  # 已有 fast 保留,不被 70b 推断成 strong
 
     def test_snippet_truncated(self):
         long = "x" * 200
-        result = _run(interview_model(_nv(), probe=_probe_returning(long)))
+        result = _run(interview_model(_nv(), probe=_probe_returning("PONG "+long)))
         assert result.response_snippet is not None
         assert result.response_snippet.endswith("...")
         assert len(result.response_snippet) <= 83  # 80 + "..."
 
     def test_result_is_immutable(self):
-        result = _run(interview_model(_nv(), probe=_probe_returning("ok")))
+        result = _run(interview_model(_nv(), probe=_probe_returning("PONG")))
         assert isinstance(result, InterviewResult)
         try:
             result.passed = False  # type: ignore[misc]
@@ -109,8 +109,8 @@ class TestInterviewBatch:
         models = [_nv("nvidia/a-70b"), _nv("nvidia/b-mini"), _nv("nvidia/c-70b")]
 
         async def probe(model_id):
-            # 不同模型返不同内容,验证顺序对应
-            return {"nvidia/a-70b": "aa", "nvidia/b-mini": "", "nvidia/c-70b": "cc"}[model_id]
+            # 不同模型返不同内容,验证顺序对应(PONG = 指令遵循通过)
+            return {"nvidia/a-70b": "PONG", "nvidia/b-mini": "", "nvidia/c-70b": "PONG extra"}[model_id]
 
         results = _run(interview_batch(models, probe=probe))
         assert len(results) == 3
@@ -125,7 +125,7 @@ class TestInterviewBatch:
         async def probe(model_id):
             if model_id == "nvidia/b-70b":
                 raise ValueError("boom")
-            return "ok"
+            return "PONG"
 
         results = _run(interview_batch(models, probe=probe))
         assert results[0].passed is True
@@ -134,7 +134,7 @@ class TestInterviewBatch:
         assert results[2].passed is True
 
     def test_empty_batch(self):
-        assert _run(interview_batch([], probe=_probe_returning("ok"))) == []
+        assert _run(interview_batch([], probe=_probe_returning("PONG"))) == []
 
 
 class TestPassedModels:
@@ -154,3 +154,53 @@ class TestPassedModels:
             InterviewResult(_nv("b"), False, "error:RuntimeError", None, None),
         ]
         assert passed_models(results) == []
+
+
+# ── scanner-interview-quality-gate:指令遵循门 + 黑名单 ─────────────────
+
+
+class TestQualityGate:
+    def test_instruction_following_passes(self):
+        """回复含 keyword(PONG)→ passed(指令遵循,非空不够)。"""
+        r = _run(interview_model(_nv(), probe=_probe_returning("PONG")))
+        assert r.passed is True and r.reason == "ok"
+
+    def test_classifier_safety_response_fails(self):
+        """内容安全分类器返 'safe'(非空但不含 PONG)→ fail。根因 fix。"""
+        r = _run(interview_model(_nv(), probe=_probe_returning("safe")))
+        assert r.passed is False and r.reason == "keyword_missing"
+
+    def test_routing_pseudo_model_content_fails(self):
+        """路由伪模型返泛化文本(无 PONG)→ fail。"""
+        r = _run(interview_model(_nv(), probe=_probe_returning("I am a routing model")))
+        assert r.passed is False and r.reason == "keyword_missing"
+
+    def test_empty_still_fails(self):
+        """空内容 → fail(向后兼容)。"""
+        r = _run(interview_model(_nv(), probe=_probe_returning("")))
+        assert r.passed is False and r.reason == "empty_content"
+
+    def test_blacklist_safety_model_fails(self):
+        """model_id 含 'safety'(内容安全分类器)→ 黑名单 fail,不管回复。"""
+        r = _run(interview_model(
+            _nv("nvidia/nemotron-3.5-content-safety:free"),
+            probe=_probe_returning("PONG")))  # 即使回复对,黑名单也拒
+        assert r.passed is False
+        assert "blacklisted" in r.reason
+
+    def test_blacklist_vision_model_fails(self):
+        """model_id 含 '-vl'(视觉模型)→ 黑名单 fail。"""
+        r = _run(interview_model(
+            _nv("nvidia/nemotron-nano-12b-v2-vl:free"),
+            probe=_probe_returning("PONG")))
+        assert r.passed is False and "blacklisted" in r.reason
+
+    def test_custom_keyword_and_blacklist_injectable(self):
+        """keyword/blacklist 可注入(参数化,默认值可覆盖)。"""
+        # 自定义 keyword
+        r = _run(interview_model(_nv(), probe=_probe_returning("HELLO"), keyword="HELLO"))
+        assert r.passed is True
+        # 自定义空黑名单 → 原 model_id 不拦
+        r2 = _run(interview_model(_nv("nvidia/safety-model"),
+                                  probe=_probe_returning("PONG"), blacklist=()))
+        assert r2.passed is True

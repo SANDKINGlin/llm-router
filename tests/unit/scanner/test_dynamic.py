@@ -54,7 +54,7 @@ def _probe_factory_passing():
     """造 probe_factory:每个 model 返回一个永远合格的 probe。"""
     def factory(model):
         async def probe(model_id):
-            return "ok-response"
+            return "PONG"
         return probe
     return factory
 

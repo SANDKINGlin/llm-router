@@ -54,7 +54,7 @@ def _passing_probe_factory():
     """fake probe_factory:每个 model 返合格 probe(零网络,模拟面试通过)。"""
     def factory(model):
         async def probe(model_id):
-            return "smoke-ok"
+            return "PONG"
         return probe
     return factory
 

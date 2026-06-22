@@ -32,7 +32,14 @@ from .tier_infer import label_tier
 _LOG = logging.getLogger(__name__)
 
 _DEFAULT_PROBE_TIMEOUT = 20.0
-_DEFAULT_PROBE_PROMPT = "Reply with the single word: ok"
+_DEFAULT_PROBE_PROMPT = "Reply with exactly: PONG"
+_DEFAULT_KEYWORD = "PONG"
+# 结构性非聊天模型 model_id 关键词(指令遵循过了也拒入池)。复用真实发现的垃圾模型模式。
+_DEFAULT_BLACKLIST: tuple[str, ...] = (
+    "safety", "-guard", "guard-", "llama-guard",
+    "-vl", "-vl-", "vision",
+    "openrouter/free", "openrouter/owl",  # 路由伪模型
+)
 
 ProbeFn = Callable[[str], "asyncio.Future | object"]
 """async (model_id) -> str(content)。抛异常 = 面试失败。0.5 注入真 OpenAIProvider 冒烟。"""
@@ -67,13 +74,24 @@ async def interview_model(
     *,
     probe: ProbeFn,
     probe_timeout: float = _DEFAULT_PROBE_TIMEOUT,
+    keyword: str = "PONG",
+    blacklist: tuple[str, ...] = _DEFAULT_BLACKLIST,
 ) -> InterviewResult:
-    """面试单个模型:调 probe 冒烟,非空内容 → passed。
+    """面试单个模型:probe 发指令遵循任务,回复含 keyword → passed。
 
+    scanner-interview-quality-gate:从"非空冒烟"升级"指令遵循门 + 黑名单"。
+    分类器返 "safe" / 视觉描述 / 路由伪模型 → 不含 keyword → fail。
     probe 抛异常 / 超时 / 返空 → failed(reason 记类型,不崩)。
-    模型贴 tier 标(label_tier,tier 已有则保留)。
+    model_id 含黑名单关键词(safety/guard/vl 等)→ 结构性非聊天 → fail(指令过了也拒)。
     """
     labeled = label_tier(model)
+    # 黑名单:结构性非聊天模型(分类器/视觉/路由伪模型),指令遵循过了也别放
+    mid_lower = model.model_id.lower()
+    if any(bad in mid_lower for bad in blacklist):
+        return InterviewResult(
+            model=labeled, passed=False, reason=f"blacklisted:{model.model_id}",
+            latency_ms=None, response_snippet=None,
+        )
     try:
         content = await asyncio.wait_for(probe(model.model_id), timeout=probe_timeout)
     except asyncio.TimeoutError:
@@ -98,9 +116,15 @@ async def interview_model(
             model=labeled, passed=False, reason="empty_content",
             latency_ms=None, response_snippet=None,
         )
+    # 指令遵循门:回复须含 keyword(默认 PONG)。分类器 "safe" / 乱答不含 → fail。
+    if keyword.upper() not in text.upper():
+        return InterviewResult(
+            model=labeled, passed=False, reason="keyword_missing",
+            latency_ms=None, response_snippet=_snippet(text),
+        )
     return InterviewResult(
         model=labeled, passed=True, reason="ok",
-        latency_ms=None,  # 真延迟由 0.5 包 perf_counter 测(同 health-probe);本层只判合格
+        latency_ms=None,
         response_snippet=_snippet(text),
     )
 
