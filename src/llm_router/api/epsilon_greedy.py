@@ -117,10 +117,13 @@ class EpsilonGreedy(RoutingStrategy):
         task_type = context.get("task_type")  # ② 匹配层信号;无 → 全对口(S2.1a 顺序)
         ordered = sorted(candidates, key=lambda n: self._rank(n, task_type))
 
-        # ε 概率探索:从有序候选随机挑 primary;否则利用最优 ordered[0]。
+        # ε 探索:mock 不进探索池(只作 last-resort 兜底,永不主动选)。
+        # 真流量实测:mock is_free=True/cost=0 排序键平局 + 永远"活",
+        # 探索时 72% 请求选 mock → Cline 收 [mock] 垃圾。修:探索池只含非 mock。
+        explore_pool = [c for c in ordered if c != "mock"] or ordered  # 全 mock 时才回退
         if self._chooser() < self._epsilon():
-            primary = ordered[self._explorer(len(ordered))]
+            primary = explore_pool[self._explorer(len(explore_pool))]
         else:
-            primary = ordered[0]
+            primary = ordered[0]  # 利用:取最优(mock 与真 provider 平局时 mock 在后,真 provider 优先)
         # 尝试链:primary 在前,fallback 按优先级序(去掉 primary)。
         return [primary] + [c for c in ordered if c != primary]

@@ -185,12 +185,34 @@ def _production_scanner_factory(cascade: Cascade, store: ScannerStore):
         on_tick_complete=_make_rebuild_callback(cascade, store),
     )
 
-# S2.8c 探活目标:真 provider(排 Mock——mock 探活恒活无信号)。模块级算一次(import 期,
-# 与 _cascade 同读一次 manifest/env,一致)。spec Req 1 ping 全部 fallback/paid key;
-# Phase1 provider 少,全 ping(不取"前 2",YAGNI;key 多时再限)。
+# S2.8c 探活目标:静态真 provider(排 Mock)+ 动态候选池(scanner.db active)。
+# 模块级算静态(import 期);动态候选 lifespan startup 时通过 _resolve_probe_targets 合并。
+# 真流量发现:动态模型零探活 → 死了路由器不知道 → 失败 fallback mock(72% mock 主因)。
+# 修:startup 合并动态候选进探活池,死了 health 标 → hard-skip。
 _probe_targets: list[tuple[str, Provider]] = [
     (name, provider) for name, provider, _key in build_adapters(load_manifest())
 ]
+
+
+def _resolve_probe_targets() -> list[tuple[str, Provider]]:
+    """合并静态 + 动态候选进探活池(lifespan startup 调用)。
+
+    动态候选从 scanner.db active_models 读 → build_dynamic_adapters 造 provider。
+    scanner.db 空/读失败 → 只静态(向后兼容)。
+    """
+    targets = list(_probe_targets)
+    try:
+        active = load_active_models_sync(_SCANNER_DB)
+        if active:
+            nv = os.environ.get("NVIDIA_API_KEY")
+            orr = os.environ.get("OPENROUTER_API_KEY")
+            for name, provider, _key in build_dynamic_adapters(
+                active, nvidia_key=nv, openrouter_key=orr
+            ):
+                targets.append((name, provider))
+    except Exception:
+        pass  # fail-open:动态候选读失败只探静态
+    return targets
 
 
 def _make_lifespan(
@@ -304,9 +326,10 @@ app = FastAPI(
     # S1.0 caveat 2 修复:传 callable 解析当前 module attr(每次 startup 解析),
     # 测试 monkeypatch.setattr(app_mod, "_cascade", tmp) 后 lifespan 跑用 tmp,不污染 production data。
     # Phase B · B3.2:scanner_factory_resolver 传 _production_scanner_factory(无 key → 返 None 不起 task)。
+    # 动态探活:probe_targets_resolver 用 callable,每次 startup 合并动态候选池进探活。
     lifespan=_make_lifespan(
         lambda: _cascade,
-        lambda: _probe_targets,
+        lambda: _resolve_probe_targets(),
         scanner_factory_resolver=lambda: _production_scanner_factory,
     ),
 )
