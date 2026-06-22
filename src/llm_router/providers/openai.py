@@ -12,6 +12,7 @@ httpx timeout→APITimeoutError,三者均为 openai.APIError 子类,catch 基类
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import openai
@@ -96,6 +97,14 @@ class OpenAIProvider(Provider):
             # D2(HERMES 共识):SDK 异常 → ProviderError → Cascade HARD。其余异常上抛不吞。
             raise ProviderError(
                 f"{self.name}: openai 调用失败 ({type(exc).__name__}): {exc}"
+            ) from exc
+        except (json.JSONDecodeError, ValueError, KeyError, AttributeError) as exc:
+            # SDK 内部解析失败(provider 返非 JSON/截断响应/非标 schema)→ ProviderError HARD,
+            # 让 Cascade fallback 到下一跳,**而非冒泡到 cascade 抛 500**。
+            # 实测:openrouter 某些 reasoning 模型(nemotron-ultra)偶返破损 JSON → JSONDecodeError
+            # 应作 provider 失败处理(同 5xx),不是路由器 bug。
+            raise ProviderError(
+                f"{self.name}: 响应解析失败 ({type(exc).__name__}): {str(exc)[:200]}"
             ) from exc
         msg = resp.choices[0].message
         content = msg.content or ""
