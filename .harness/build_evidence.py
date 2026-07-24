@@ -34,11 +34,15 @@ ALLOWED = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
 # Tolerant of markdown headers (#), emphasis (**), parens after VERDICT.
 # Note: use [ \t]* not \s* at line start so the ^ anchor stays on the
 # correct line and hit_line computation is accurate.
+# Right-boundary anchor: token must be followed by end-of-line, end-of-string,
+# whitespace, markdown punctuation, or paren-close. This blocks attacks like
+# "VERDICT: PASSENGER" or "VERDICT: PASS_NOT_REALLY" from being parsed as PASS.
 _VERDICT_RE = re.compile(
     r'(?im)^[ \t]*(?:#+[ \t]*)?(?:总体裁决[ \t]*[:：][ \t]*\*{0,2}'
     r'|VERDICT(?:\s*\([^\n)]*\))?[ \t]*[:：][ \t]*\*{0,2}'
     r'|(?:最终[ \t]*)?VERDICT[ \t]*[:：][ \t]*\*{0,2})'
     r'(PASS_WITH_FIXES|PASS|FAIL|BLOCKED|NOT_APPLICABLE)'
+    r'(?![A-Z0-9_])'  # right-boundary: no more alnum/underscore
 )
 
 
@@ -68,12 +72,18 @@ def review(path: str) -> dict:
             "parsed": False, "hit_line": 0, "raw": "", "verdict": "BLOCKED",
         }
     text = p.read_text(errors="replace")
-    m = _VERDICT_RE.search(text)
-    if not m:
+    # S7.1.1: use findall + last-match semantics so an example/template
+    # VERDICT earlier in the file cannot mask the actual final verdict.
+    # RATIONALE: agents may write templates with "VERDICT: PASS" as an
+    # example, then the real verdict at the bottom. The bottom one is
+    # authoritative.
+    matches = list(_VERDICT_RE.finditer(text))
+    if not matches:
         return {
             "artifact": artifact, "exists": True, "size_bytes": size,
             "parsed": False, "hit_line": 0, "raw": "", "verdict": "BLOCKED",
         }
+    m = matches[-1]
     hit_line = text.count("\n", 0, m.start()) + 1
     raw = m.group(1).upper()
     # PASS_WITH_FIXES never collapses to PASS.

@@ -106,6 +106,32 @@ class ReviewTests(unittest.TestCase):
         p = self._write("总体裁决: PASS\n")
         self.assertEqual(build_evidence.review(p)["verdict"], "PASS")
 
+    # ── S7.1.1 adversarial tests (R1/R2 from Hermes review) ──
+
+    def test_T12_token_right_boundary_blocks_PASSENGER(self):
+        p = self._write("VERDICT: PASSENGER\n")
+        r = build_evidence.review(p)
+        # PASSENGER must NOT be parsed as PASS — right-boundary anchor.
+        self.assertNotEqual(r["verdict"], "PASS")
+
+    def test_T13_token_right_boundary_blocks_PASS_NOT_REALLY(self):
+        p = self._write("VERDICT: PASS_NOT_REALLY\n")
+        r = build_evidence.review(p)
+        self.assertNotEqual(r["verdict"], "PASS")
+
+    def test_T14_last_verdict_authoritative(self):
+        # Two VERDICT lines: example first, real second. The real one wins.
+        p = self._write("VERDICT: PASS\n\n# Final\n\nVERDICT: FAIL\n")
+        r = build_evidence.review(p)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertEqual(r["raw"], "FAIL")
+
+    def test_T15_token_right_boundary_allows_normal_PASS(self):
+        # End-of-line is a valid boundary — normal PASS still works.
+        p = self._write("VERDICT: PASS\n")
+        r = build_evidence.review(p)
+        self.assertEqual(r["verdict"], "PASS")
+
 
 class OverallVerdictTests(unittest.TestCase):
 
