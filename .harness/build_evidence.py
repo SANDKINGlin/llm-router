@@ -152,12 +152,30 @@ def main() -> int:
 
     # S7.1.2: empty profile list is BLOCKED, not vacuous PASS.
     if not vals:
+        # The schema requires verifications: minItems 1 and threeway
+        # with cc/codex/hermes. To stay schema-valid while still expressing
+        # "no real profile ran", emit a single BLOCKED placeholder
+        # verification + three BLOCKED placeholder reviews. The overall
+        # verdict is BLOCKED and the reason explicitly says no profile ran.
+        placeholder = {
+            "profile": "fast", "command": ["(no profile provided)"],
+            "exit_code": -1, "duration_ms": 0, "status": "BLOCKED",
+            "artifact": None,
+        }
+        review_placeholder = {
+            "artifact": "(no review — empty profile)",
+            "exists": False, "size_bytes": 0, "parsed": False,
+            "hit_line": 0, "raw": "", "verdict": "BLOCKED",
+        }
         bundle = {
             "schema_version": 1, "task_id": a.task_id, "commit": a.commit,
-            "changed_paths": a.changed_path, "verifications": [],
-            "threeway": {}, "verdict": "BLOCKED",
+            "changed_paths": a.changed_path, "verifications": [placeholder],
+            "threeway": {"cc": review_placeholder,
+                         "codex": review_placeholder,
+                         "hermes": review_placeholder},
+            "verdict": "BLOCKED",
             "verdict_reason": "no profile results provided (--profile required at least one)",
-            "builder": "build_evidence.py S7.1.2 (strict-verdict + empty-profile-guard)",
+            "builder": "build_evidence.py S7.2 (strict-verdict + empty-profile-guard + schema-compatible)",
         }
         Path(a.output).write_text(json.dumps(bundle, ensure_ascii=False, indent=2))
         print("BLOCKED", a.output, "|", "empty profile list")
@@ -177,7 +195,7 @@ def main() -> int:
         "threeway": threeway,
         "verdict": verdict,
         "verdict_reason": reason,
-        "builder": "build_evidence.py S7.1 (strict-verdict)",
+        "builder": "build_evidence.py S7.2 (strict-verdict + empty-profile-guard + schema-compatible)",
     }
     Path(a.output).write_text(json.dumps(bundle, ensure_ascii=False, indent=2))
     print(verdict, a.output, "|", reason)

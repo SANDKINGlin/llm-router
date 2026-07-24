@@ -287,7 +287,17 @@ class EndToEndBundleTests(unittest.TestCase):
         self.assertEqual(rc, 2)  # non-zero exit so pipelines fail-fast
         b = json.loads(Path(out).read_text())
         self.assertEqual(b["verdict"], "BLOCKED")
-        self.assertEqual(b["verifications"], [])
+        # S7.2 schema-compatible: empty profile emits one BLOCKED placeholder
+        # verification (so verifications minItems=1 is satisfied) and three
+        # BLOCKED placeholder reviews. The semantic "no real profile ran"
+        # is preserved via verdict=BLOCKED, rc=2, and the verdict_reason.
+        self.assertEqual(len(b["verifications"]), 1)
+        self.assertEqual(b["verifications"][0]["status"], "BLOCKED")
+        self.assertEqual(set(b["threeway"].keys()), {"cc", "codex", "hermes"})
+        self.assertTrue(
+            all(v["verdict"] == "BLOCKED" for v in b["threeway"].values()),
+            "all threeway should be BLOCKED placeholder",
+        )
         self.assertTrue(
             "empty profile" in b["verdict_reason"].lower()
             or "no profile results" in b["verdict_reason"].lower(),
