@@ -34,15 +34,17 @@ ALLOWED = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
 # Tolerant of markdown headers (#), emphasis (**), parens after VERDICT.
 # Note: use [ \t]* not \s* at line start so the ^ anchor stays on the
 # correct line and hit_line computation is accurate.
-# Right-boundary anchor: token must be followed by end-of-line, end-of-string,
-# whitespace, markdown punctuation, or paren-close. This blocks attacks like
-# "VERDICT: PASSENGER" or "VERDICT: PASS_NOT_REALLY" from being parsed as PASS.
+# Right-boundary anchor: forbid continuation by alnum, underscore, hyphen,
+# or slash. This blocks "PASSENGER", "PASS_NOT_REALLY", "PASS/FAIL",
+# "PASS-WITH-CAVEAT" while still allowing the natural end-of-line / EOL /
+# end-of-string after a bare token. (Python \b is insufficient here
+# because \b only fires at word/non-word boundaries, and /- are non-word.)
 _VERDICT_RE = re.compile(
     r'(?im)^[ \t]*(?:#+[ \t]*)?(?:总体裁决[ \t]*[:：][ \t]*\*{0,2}'
     r'|VERDICT(?:\s*\([^\n)]*\))?[ \t]*[:：][ \t]*\*{0,2}'
     r'|(?:最终[ \t]*)?VERDICT[ \t]*[:：][ \t]*\*{0,2})'
     r'(PASS_WITH_FIXES|PASS|FAIL|BLOCKED|NOT_APPLICABLE)'
-    r'(?![A-Z0-9_])'  # right-boundary: no more alnum/underscore
+    r'(?![A-Za-z0-9_\-/])'
 )
 
 
@@ -147,6 +149,19 @@ def main() -> int:
     for f in a.profile:
         x = json.loads(Path(f).read_text())
         vals.extend(x if isinstance(x, list) else [x])
+
+    # S7.1.2: empty profile list is BLOCKED, not vacuous PASS.
+    if not vals:
+        bundle = {
+            "schema_version": 1, "task_id": a.task_id, "commit": a.commit,
+            "changed_paths": a.changed_path, "verifications": [],
+            "threeway": {}, "verdict": "BLOCKED",
+            "verdict_reason": "no profile results provided (--profile required at least one)",
+            "builder": "build_evidence.py S7.1.2 (strict-verdict + empty-profile-guard)",
+        }
+        Path(a.output).write_text(json.dumps(bundle, ensure_ascii=False, indent=2))
+        print("BLOCKED", a.output, "|", "empty profile list")
+        return 2  # non-zero to fail-fast
 
     threeway = {k: review(v) for k, v in [
         ("cc", a.cc), ("codex", a.codex), ("hermes", a.hermes),

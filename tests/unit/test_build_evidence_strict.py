@@ -132,6 +132,20 @@ class ReviewTests(unittest.TestCase):
         r = build_evidence.review(p)
         self.assertEqual(r["verdict"], "PASS")
 
+    # ── S7.1.2 adversarial tests (Hermes second-round probes P1/P2/P4) ──
+
+    def test_T16_slash_compound_token(self):
+        # PASS/FAIL must NOT parse as PASS — word boundary covers "/".
+        p = self._write("VERDICT: PASS/FAIL\n")
+        r = build_evidence.review(p)
+        self.assertNotEqual(r["verdict"], "PASS")
+
+    def test_T17_hyphen_compound_token(self):
+        # PASS-WITH-CAVEAT must NOT parse as PASS.
+        p = self._write("总体裁决：PASS-WITH-CAVEAT\n")
+        r = build_evidence.review(p)
+        self.assertNotEqual(r["verdict"], "PASS")
+
 
 class OverallVerdictTests(unittest.TestCase):
 
@@ -245,6 +259,40 @@ class EndToEndBundleTests(unittest.TestCase):
         self.assertEqual(b["verdict"], "BLOCKED")
         self.assertEqual(b["threeway"]["codex"]["verdict"], "BLOCKED")
         self.assertIn("BLOCKED", b["verdict_reason"])
+
+    def test_e2e_empty_profile_forces_blocked_and_nonzero(self):
+        # S7.1.2: empty profile list must be BLOCKED with rc=2, not vacuous PASS.
+        out_fd, out = tempfile.mkstemp(prefix="s71-bundle-", suffix=".json")
+        os.close(out_fd)
+        self.addCleanup(lambda: os.unlink(out) if os.path.exists(out) else None)
+        empty_profile = tempfile.mkstemp(prefix="s71-empty-", suffix=".json")
+        os.close(empty_profile[0])
+        Path(empty_profile[1]).write_text("[]")
+        self.addCleanup(lambda: os.unlink(empty_profile[1]) if os.path.exists(empty_profile[1]) else None)
+        argv = [
+            "build_evidence.py",
+            "--task-id", "s71-empty-test",
+            "--profile", empty_profile[1],
+            "--cc", self._write("VERDICT: PASS\n"),
+            "--codex", self._write("VERDICT: PASS\n"),
+            "--hermes", self._write("VERDICT: PASS\n"),
+            "--output", out,
+        ]
+        saved = sys.argv
+        try:
+            sys.argv = argv
+            rc = build_evidence.main()
+        finally:
+            sys.argv = saved
+        self.assertEqual(rc, 2)  # non-zero exit so pipelines fail-fast
+        b = json.loads(Path(out).read_text())
+        self.assertEqual(b["verdict"], "BLOCKED")
+        self.assertEqual(b["verifications"], [])
+        self.assertTrue(
+            "empty profile" in b["verdict_reason"].lower()
+            or "no profile results" in b["verdict_reason"].lower(),
+            f"verdict_reason should mention empty/no profile, got: {b['verdict_reason']!r}",
+        )
 
 
 if __name__ == "__main__":
