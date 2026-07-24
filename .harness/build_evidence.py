@@ -30,6 +30,39 @@ import argparse, json, re, sys
 from pathlib import Path
 
 ALLOWED = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
+
+
+def _strip_fenced_verdicts(text: str) -> str:
+    """Drop VERDICT lines that fall inside an open markdown code fence.
+
+    A fence is a line whose first non-whitespace characters are ``` (with
+    optional language tag). Once a fence opens, every subsequent line is
+    considered inside the fence until another ``` line closes it. VERDICT
+    matches inside a fence are likely template examples, not the author's
+    real conclusion.
+
+    The S7.1.1 last-match-wins logic still applies to whatever survives
+    this stripping, so an unfenced example after a real verdict cannot
+    mask it, and a fenced example after a real verdict is now also safe.
+    """
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip(" \t")
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            # Fence delimiter lines are also dropped (they cannot be
+            # VERDICT lines anyway, and skipping them keeps line numbers
+            # stable for the hit_line computation).
+            continue
+        if in_fence:
+            # Inside a fence: drop any VERDICT line so the regex cannot
+            # see it. We do not need to drop the whole line if it has no
+            # VERDICT, but for simplicity and audit clarity we drop the
+            # whole line.
+            continue
+        out.append(line)
+    return "".join(out)
 # Match either Chinese 总体裁决/最终 VERDICT or English VERDICT.
 # Tolerant of markdown headers (#), emphasis (**), parens after VERDICT.
 # Note: use [ \t]* not \s* at line start so the ^ anchor stays on the
@@ -74,6 +107,13 @@ def review(path: str) -> dict:
             "parsed": False, "hit_line": 0, "raw": "", "verdict": "BLOCKED",
         }
     text = p.read_text(errors="replace")
+    # S7.2.3: skip VERDICT lines that fall inside a markdown code fence.
+    # Hermes S7.2 third-round review (§3.3) found the reverse-masking
+    # bug: when the author writes a real VERDICT and then a code-block
+    # example with a different VERDICT inside, regex last-match-wins
+    # silently picks the fenced PASS. We pre-process the text to drop
+    # any VERDICT line whose line index is inside an open ``` fence.
+    text = _strip_fenced_verdicts(text)
     # S7.1.1: use findall + last-match semantics so an example/template
     # VERDICT earlier in the file cannot mask the actual final verdict.
     # RATIONALE: agents may write templates with "VERDICT: PASS" as an

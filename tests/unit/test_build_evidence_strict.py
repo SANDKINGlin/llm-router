@@ -146,6 +146,38 @@ class ReviewTests(unittest.TestCase):
         r = build_evidence.review(p)
         self.assertNotEqual(r["verdict"], "PASS")
 
+    # ── S7.2.3 fence-masking tests (Hermes third-round review §3.3) ──
+
+    def test_T18_fenced_pass_after_real_fail_does_not_mask(self):
+        # Real verdict on line 1 (FAIL), then a fenced example with PASS.
+        # Fenced PASS must be ignored; the verdict should be FAIL.
+        body = "VERDICT: FAIL\n\n```bash\nVERDICT: PASS\n```\n"
+        p = self._write(body)
+        r = build_evidence.review(p)
+        self.assertEqual(r["verdict"], "FAIL",
+                         f"fenced example should not mask real verdict, got {r}")
+
+    def test_T19_fenced_fail_after_real_pass_does_not_mask(self):
+        body = "VERDICT: PASS\n\n```\nVERDICT: FAIL\n```\n"
+        p = self._write(body)
+        r = build_evidence.review(p)
+        self.assertEqual(r["verdict"], "PASS")
+
+    def test_T20_indented_fence_opens_inside_block(self):
+        # Fence with leading spaces — still recognized.
+        body = "VERDICT: FAIL\n\n   ```\nVERDICT: PASS\n   ```\n"
+        p = self._write(body)
+        r = build_evidence.review(p)
+        self.assertEqual(r["verdict"], "FAIL")
+
+    def test_T21_unfenced_example_after_real_still_authoritative(self):
+        # S7.1.1 last-match-wins: an unfenced PASS example after real FAIL
+        # still picks the real FAIL (last wins among unfenced lines).
+        body = "VERDICT: FAIL\n\nA note about template:\n\nVERDICT: PASS\n"
+        p = self._write(body)
+        r = build_evidence.review(p)
+        self.assertEqual(r["verdict"], "PASS")  # last match wins (documented behavior)
+
 
 class OverallVerdictTests(unittest.TestCase):
 
