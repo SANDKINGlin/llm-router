@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - LLM Router Admin</title>
+    <script src="/static/js/htmx.min.js"></script>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">LLM Router Admin</div>
+            <div class="nav-links">
+                <a href="/admin/" class="nav-link">Dashboard</a>
+                <a href="/admin/keys" class="nav-link">密钥管理</a>
+                <a href="/admin/monitoring" class="nav-link">监控</a>
+                <a href="/admin/settings" class="nav-link">设置</a>
+                <a href="/admin/backup" class="nav-link">备份</a>
+            </div>
+        </nav>
+
+        <main class="main-content">
+<div class="login-container">
+    <div class="login-card">
+        <h1>LLM Router Admin</h1>
+        <p class="login-subtitle">管理密钥、监控和配置</p>
+
+        <form id="login-form">
+            <div class="form-group">
+                <label for="username">用户名</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+
+            <div class="form-group">
+                <label for="password">密码</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+
+            <button type="submit" class="btn btn-primary">登录</button>
+        </form>
+
+        <div id="login-result"></div>
+
+        <div class="login-help">
+            <h3>默认凭据</h3>
+            <p>用户名: <code>admin</code></p>
+            <p>密码: <code>admin</code></p>
+            <p class="login-warning">⚠️ 生产环境请立即修改密码</p>
+        </div>
+    </div>
+    </main>
+
+    <footer class="footer">
+        <p>&copy; 2026 LLM Router Admin. All rights reserved.</p>
+    </footer>
+    </div>
+
+    <script src="/static/js/admin.js"></script>
+</body>
+</html>

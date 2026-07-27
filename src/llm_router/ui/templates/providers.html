@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Provider管理 - LLM Router Admin</title>
+    <script src="/static/js/htmx.min.js"></script>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 导航栏 -->
+        <nav class="navbar">
+            <div class="nav-brand">LLM Router Admin</div>
+            <div class="nav-links">
+                <a href="/admin/" class="nav-link">Dashboard</a>
+                <a href="/admin/keys" class="nav-link">密钥管理</a>
+                <a href="/admin/providers" class="nav-link active">Provider管理</a>
+                <a href="/admin/monitoring" class="nav-link">监控</a>
+                <a href="/admin/settings" class="nav-link">设置</a>
+                <a href="/admin/backup" class="nav-link">备份</a>
+            </div>
+        </nav>
+
+        <!-- 面包屑导航 -->
+        <div class="breadcrumb">
+            <a href="/admin/">← 返回Dashboard</a>
+            <span class="breadcrumb-separator">/</span>
+            <span class="breadcrumb-current">Provider管理</span>
+        </div>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <div class="providers-container">
+                <h1>Provider管理</h1>
+
+                <!-- 控制栏 -->
+                <div class="controls-bar">
+                    <div class="filter-group">
+                        <label for="status-filter">状态筛选:</label>
+                        <select id="status-filter" class="filter-select">
+                            <option value="all">全部</option>
+                            <option value="enabled">可用</option>
+                            <option value="disabled">不可用</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary"
+                            hx-get="/admin/providers/form"
+                            hx-target="#modal-container"
+                            hx-swap="innerHTML">
+                        + 新增Provider
+                    </button>
+                </div>
+
+                <!-- Provider列表表格 -->
+                <div class="providers-table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Provider名称</th>
+                                <th>Tier</th>
+                                <th>Base URL</th>
+                                <th>状态</th>
+                                <th>模型数量</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="providers-list"
+                              hx-get="/admin/providers/list"
+                              hx-trigger="load, every 30s"
+                              hx-swap="innerHTML">
+                            <tr>
+                                <td colspan="6" class="loading">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 模态框容器 -->
+                <div id="modal-container"></div>
+            </div>
+        </main>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <p>&copy; 2026 LLM Router Admin. All rights reserved.</p>
+        </footer>
+    </div>
+
+    <script src="/static/js/admin.js"></script>
+
+<style>
+.providers-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.controls-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 20px 0;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.filter-select {
+    padding: 6px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.providers-table-container {
+    margin: 20px 0;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    overflow: hidden;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.data-table th {
+    background-color: #f5f5f5;
+    font-weight: 600;
+    color: #333;
+}
+
+.data-table tbody tr:hover {
+    background-color: #f8f9fa;
+}
+
+.provider-status {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.provider-status.enabled {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.provider-status.disabled {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.provider-tier {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.tier-strong {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.tier-medium {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.tier-fast {
+    background-color: #d1ecf1;
+    color: #0c5460;
+}
+
+.btn-sm {
+    padding: 4px 8px;
+    font-size: 12px;
+    margin: 0 2px;
+}
+
+.loading {
+    text-align: center;
+    color: #999;
+    padding: 40px;
+}
+</style>
+</body>
+</html>
