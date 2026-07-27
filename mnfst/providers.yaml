@@ -48,3 +48,43 @@ providers:
     model: qwen/qwen3-coder:free   # 编码模型(非 reasoning,JSON 响应稳定);1M ctx;支持 tool use;免费档;限流时 Cascade fallback
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
+
+  # ── Agnes AI(全模态免费 API,✅ 06/23 实测端点 apihub.agnes-ai.com/v1 直连可用)──
+  # 06/23 实测:agnes-2.0-flash 文本+视觉理解(吃图 200 答"Black"),OpenAI 兼容,免费 RPM 20。
+  # 三模态:TEXT(agnes-2.0-flash,自带视觉理解)/ IMAGE(agnes-image-*,生图)/ VIDEO(agnes-video-*)。
+  # 读图理解需求由 TEXT 模型覆盖。设 AGNES_API_KEY 后启用。
+  - name: agnes
+    tier: strong
+    quota: 500000
+    cooldown_s: 30
+    is_free: true
+    cost_multiplier: 0.0
+    model: agnes-2.0-flash   # 文本模型,自带视觉理解;OpenAI 兼容;免费 RPM 20;限流时 Cascade fallback
+    base_url: https://apihub.agnes-ai.com/v1
+    api_key_env: AGNES_API_KEY
+
+  # ── ModelScope魔搭社区(国产模型平台,每日2000次免费调用)──
+  # 支持DeepSeek V4、Qwen等60000+模型,国内直连稳定
+  # 设MODELSCOPE_API_KEY后启用
+  - name: modelscope
+    tier: strong
+    quota: 2000           # 每日2000次免费调用
+    cooldown_s: 30
+    is_free: true
+    cost_multiplier: 0.0
+    model: deepseek-chat     # DeepSeek V4 PRO,强推理能力,适合中文编码和逻辑推理
+    base_url: https://api-inference.modelscope.cn/v1
+    api_key_env: MODELSCOPE_API_KEY
+
+
+# ── v2 §3 D3 继承段扩展 (待启用, 见 ## 继承自: 头部注释) ──
+# 7 个 OmniKey provider 模板 (不启用, 仅扩清单):
+#   - cerebras       (海外直连, ⛔ 风控: 脏 IP 易触发, 同 NVIDIA 理)── 默认不启用
+#   - mistral        (海外直连, ⛔ 风控: 脏 IP 易触发)── 默认不启用
+#   - github_models  (海外直连, ⛔ 风控: 脏 IP 易触发)── 默认不启用
+#   - sambanova      (海外直连, ⛔ 风控: 脏 IP 易触发)── 默认不启用
+#   - cohere         (海外直连, ⛔ 风控: 脏 IP 易触发)── 默认不启用
+#   - cloudflare     (海外直连, ⛔ 风控: 脏 IP 易触发)── 默认不启用
+#   - huggingface    (海外直连, ⛔ 风控: 脏 IP 易触发)── 默认不启用
+#   - z_ai           (智谱 Z.ai, ✅ 中国调国产模型, 真用 ZHIPU_API_KEY)── 可启用 (用户已有 KEY)
+#   - gemini         (Google 直连, ⛔ 风控: 脏 IP 全面避开含经聚合器)── 默认不启用

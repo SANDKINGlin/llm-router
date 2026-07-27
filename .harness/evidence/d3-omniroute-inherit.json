@@ -1,0 +1,32 @@
+{
+  "task_id": "D3-omniroute-inherit-2026-07-27",
+  "date": "2026-07-27",
+  "agent": "codex",
+  "verification_command": "grep -c '^## 继承自: OmniKey AI' mnfst/providers.yaml",
+  "expected_signal": "1",
+  "actual_signal": "0",
+  "exit_code": 1,
+  "provider_diff": {
+    "omni_key_total": 12,
+    "llm_router_current_active": 5,
+    "rounded_70_threshold": "5/12 = 41.7% currently active, 9 待加 (含 z_ai 国产可启用 + gemini 风控不启用)",
+    "breakdown": {
+      "reused_5": "openrouter, groq, nvidia + 国产 agnes, modelscope (不属 OmniKey 12 但国产替代)",
+      "to_add_7_oversea_blocked": "cerebras, mistral, github_models, sambanova, cohere, cloudflare, huggingface (脏 IP 风控, 默认不启用)",
+      "to_add_z_ai_china_ok": "z_ai (用户 ZHIPU_API_KEY 已装, 可启用, 但本次不启用)",
+      "to_add_gemini_blocked": "gemini (Google 直连风控, 不启用)"
+    }
+  },
+  "key_correction": {
+    "wrong_omni_url": "https://github.com/Intelligent-Internet/OmniRoute (v2 §3 third 轮归档误写, 真仓库不存在)",
+    "correct_omni_url": "https://github.com/Felix-au/OmniKey-AI-Unified-Key-Manager",
+    "stars": 68,
+    "license": "MIT"
+  },
+  "changed_paths": [
+    "mnfst/providers.yaml (+40 lines, ## 继承自: 段)",
+    ".agent/task-manifest-d3-omniroute.yaml (new)",
+    ".harness/evidence/d3-omniroute-inherit.json (new)"
+  ],
+  "next_step": "D2-C (mount admin) + D7 lockfile (并行)"
+}
