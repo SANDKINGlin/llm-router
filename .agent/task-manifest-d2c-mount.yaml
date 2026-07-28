@@ -1,0 +1,44 @@
+# task-manifest — D2-C mount 切片 (2026-07-28, 接续 2026-07-27 BLOCKED)
+# 触发: 2026-07-27 v2 §6 验收失败 — curl /admin/healthz 预期 200, 实跑 401 (admin middleware 已装但未传 token)
+# 决议: 2026-07-28 11:14 Hermes 主会话自决 (用户超时未答, 按"授权全权限自救"协议)
+#       解 B = 保留 middleware + 验收脚本传 token + v2 §6 改预期
+task_id: D2C-mount-2026-07-28
+date: 2026-07-28
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d2c-mount
+branch: wt/port8789-mount
+parent_commit: 08ebbb8
+
+allowed_paths:
+  - src/llm_router/app.py                                # mount admin_subapp
+  - tests/integration/__init__.py                        # 配套 import
+  - scripts/verify_d2c_mount.py                          # 新验收脚本
+  - .agent/task-manifest-d2c-mount.yaml                  # 本 manifest
+  - .harness/evidence/d2c-mount.json                     # 验收证据
+
+forbidden_paths:
+  - src/llm_router/admin/                                # 不动 admin 内部
+  - src/llm_router/ui/                                   # 不动 ui
+  - openspec/changes/                                    # 不动 openspec (D5 范围)
+
+verification:
+  pre_check: ".venv/bin/python -c 'import cryptography' (D4 必须先装才能 mount admin_subapp)"
+  expected_after_mount:
+    - "GET /health -> 200 (server 起来了)"
+    - "GET /admin/api/admin/users 无 token -> 401 (middleware 拦)"
+    - "POST /admin/api/auth/login admin/admin -> 200 (拿 token)"
+    - "GET /admin/api/admin/users 带 token -> 200 (端到端通)"
+    - "GET /docs -> 200 (FastAPI 文档)"
+  verification_command: "python scripts/verify_d2c_mount.py (需先启 server: nohup .venv/bin/python -m uvicorn llm_router.app:app --host 127.0.0.1 --port 8789 &)"
+  expected_exit_code: 0
+
+blocker_resolution:
+  original_blocked: "v2 §6 验收 curl /admin/healthz 预期 200, 实跑 401"
+  resolution_method: "B — 保留 middleware + 验收脚本传 token + v2 §6 改预期"
+  why_B_over_A: "A 取消 middleware 会降安全 (admin 端点无鉴权, localhost-only 也防不住内部横向)"
+  why_B_over_C: "C 端到端流程已包含在 B 的 5 步验收里, 不需额外 '真 auth flow' 测试"
+
+references:
+  parent_review: ~/ObsidianVault/20-记忆/共享/research/D2-C-BLOCKED-2026-07-27 (前轮汇报, 待补正式归档)
+  parent_commit_message: "feat(add-docker-packaging): 可迁移部署收尾(D1-D5,ponytail 小改)"
+  v2_section_6: "原预期: 200, 新预期: 401 (无 token) + 200 (带 token, admin/admin login)"
