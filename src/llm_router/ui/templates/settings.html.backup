@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}系统设置 - LLM Router Admin{% endblock %}
+
+{% block content %}
+<div class="settings-container">
+    <h1>系统设置</h1>
+
+    <!-- 灰度发布设置 -->
+    <div class="settings-section">
+        <h2>灰度发布</h2>
+        <div class="setting-item">
+            <label for="gray-percent">灰度百分比</label>
+            <div class="slider-container">
+                <input type="range"
+                       id="gray-percent-slider"
+                       min="0"
+                       max="100"
+                       value="{{ gray_percent|default(100) }}"
+                       oninput="updateGrayPercent(this.value)">
+                <input type="number"
+                       id="gray-percent-input"
+                       min="0"
+                       max="100"
+                       value="{{ gray_percent|default(100) }}"
+                       onchange="updateGrayPercent(this.value)">
+                <span id="gray-percent-value">{{ gray_percent|default(100) }}%</span>
+            </div>
+            <button class="btn btn-primary"
+                    hx-put="/admin/settings/gray_percent"
+                    hx-include="[name='value']"
+                    hx-target="#gray-percent-result">
+                应用
+            </button>
+            <div id="gray-percent-result"></div>
+        </div>
+    </div>
+
+    <!-- 熔断设置 -->
+    <div class="settings-section">
+        <h2>熔断配置</h2>
+        <div class="setting-item">
+            <label>熔断阈值</label>
+            <input type="number" min="1" max="100" value="5">
+            <button class="btn btn-primary">应用</button>
+        </div>
+        <div class="setting-item">
+            <label>冷却时间（秒）</label>
+            <input type="number" min="10" max="3600" value="60">
+            <button class="btn btn-primary">应用</button>
+        </div>
+    </div>
+
+    <!-- 成本控制 -->
+    <div class="settings-section">
+        <h2>成本控制</h2>
+        <div class="setting-item">
+            <label>Token预算</label>
+            <input type="number" min="0" value="1000000">
+            <button class="btn btn-primary">应用</button>
+        </div>
+    </div>
+
+    <!-- 热重载 -->
+    <div class="settings-section">
+        <h2>配置热重载</h2>
+        <div class="setting-item">
+            <p>修改配置后可手动触发热重载，或等待文件监听自动触发。</p>
+            <button class="btn btn-warning"
+                    hx-post="/admin/reload/trigger"
+                    hx-target="#reload-result">
+            立即重载
+            </button>
+            <div id="reload-result"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block head %}
+<style>
+.settings-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.settings-section {
+    background: white;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.settings-section h2 {
+    font-size: 18px;
+    margin: 0 0 15px 0;
+    color: #333;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 10px;
+}
+
+.setting-item {
+    margin-bottom: 15px;
+}
+
+.setting-item label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 5px;
+    color: #555;
+}
+
+.slider-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+#gray-percent-slider {
+    flex: 1;
+}
+
+#gray-percent-input {
+    width: 60px;
+}
+
+#gray-percent-value {
+    min-width: 50px;
+    font-weight: 600;
+}
+
+.setting-item input[type="number"] {
+    width: 120px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    margin-right: 10px;
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updateGrayPercent(value) {
+    document.getElementById('gray-percent-slider').value = value;
+    document.getElementById('gray-percent-input').value = value;
+    document.getElementById('gray-percent-value').textContent = value + '%';
+}
+</script>
+{% endblock %}
