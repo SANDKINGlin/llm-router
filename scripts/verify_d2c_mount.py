@@ -21,6 +21,7 @@ import urllib.error
 from urllib.parse import urlencode
 
 BASE_URL = "http://127.0.0.1:8789"
+LOGIN_PATH = "/admin/admin/auth/login"  # mount 后: /admin (mount prefix) + /admin/auth/login (admin 内部)
 
 
 def http_get(path, headers=None):
@@ -62,8 +63,8 @@ def main():
         return 1
     print(f"OK Step 2: GET /admin/api/admin/users 无 token -> 401 (middleware 拦了)")
 
-    # Step 3: login admin/admin 拿 token
-    code, body = http_post("/admin/api/auth/login", {"username": "admin", "password": "admin"})
+    # Step 3: login admin/admin 拿 token (路径 /admin/admin/auth/login 是 mount 后真实路径)
+    code, body = http_post(LOGIN_PATH, {"username": "admin", "password": "admin"})
     if code != 200:
         print(f"FAIL Step 3: POST /admin/api/auth/login admin/admin 预期 200, 实 {code}: {body[:200]}")
         return 1
