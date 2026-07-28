@@ -1,0 +1,39 @@
+schema_version: 1
+status: ACTIVE
+project:
+  name: llm-router
+  type: python-fastapi-cli
+  root: .
+  sdd_system: openspec
+environment:
+  python: .venv/bin/python
+  setup: ".venv/bin/python -m pip install -e '.[dev]'"
+  setup_requires_authorization: true
+  prerequisites:
+    - .venv/bin/python exists
+    - pyproject.toml contains tool.pytest.ini_options
+commands:
+  lint: null
+  typecheck: null
+  unit: [".venv/bin/python", "-m", "pytest", "tests/unit", "-q"]
+  integration: [".venv/bin/python", "-m", "pytest", "tests/integration", "-q"]
+  e2e: [".venv/bin/python", "-m", "pytest", "tests/e2e", "-q"]
+  full: [".venv/bin/python", "-m", "pytest", "tests", "-q"]
+  architecture_checks: null
+profiles:
+  fast: [unit]
+  medium: [unit, integration]
+  slow: [e2e]
+timeouts_seconds:
+  fast: 300
+  medium: 900
+  slow: 900
+evidence:
+  schema: .harness/evidence.schema.json
+  output_directory: .harness/evidence
+behavior:
+  missing_manifest: NO_OP
+  unknown_command: BLOCKED
+  nonzero_exit: FAIL
+  auto_modify_code: false
+  auto_install_dependencies: false
