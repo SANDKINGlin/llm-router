@@ -28,5 +28,6 @@
     ".agent/task-manifest-d3-omniroute.yaml (new)",
     ".harness/evidence/d3-omniroute-inherit.json (new)"
   ],
-  "next_step": "D2-C (mount admin) + D7 lockfile (并行)"
+  "next_step": "D2-C (mount admin) + D7 lockfile (并行)",
+  "fix_note": "first commit 522e9ad missed ## header (段尾写了, header 没加). Now amended in same commit (522e9ad). All 7 lines ## 继承自: OmniKey AI + URL + stars 真在文件头."
 }

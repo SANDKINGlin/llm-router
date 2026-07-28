@@ -11,6 +11,13 @@
 #   ⛔ 风控:Groq / Together / Fireworks 等海外直连(脏 IP 易触发,未实测勿启用)
 #   ⛔ 风控:Gemini / Google / OpenAI 直连 —— IP 干净度敏感,全面避开(含经聚合器调这类专有模型)
 #   规则:NVIDIA NIM + OpenRouter 为海外主力;国产模型走其自家国产档;Gemini 类专有模型任何路径都避开。
+## 继承自: OmniKey AI (Felix-au/OmniKey-AI-Unified-Key-Manager, MIT, 68 stars, 2026-07-10)
+## 引用协议: 仅引 provider 名单作为 Scanner 静态清单扩充源, 不替换 llm-router 中间件架构
+## 比对结果 (v2 §6 D3 验收): 12 OmniKey providers 中 3 复用 (openrouter/groq/nvidia) + 2 国产替代 (agnes/modelscope) = 5 当前可用, 9 待加 (cerebras/mistral/github_models/sambanova/cohere/cloudflare/huggingface/z_ai/gemini)
+## 启用规则: 注释状态, 必须有真 KEY 才能启用 (按风控红线地图)
+## 来源 URL: https://github.com/Felix-au/OmniKey-AI-Unified-Key-Manager
+## 详细比对差异: see .harness/evidence/omniroute-diff.md
+
 providers:
   # ── Groq(海外直连,⛔ 风控:脏 IP 易触发,同 NVIDIA 理)── 默认不启用 ──
   - name: groq
