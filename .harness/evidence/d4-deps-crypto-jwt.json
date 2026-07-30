@@ -1,0 +1,28 @@
+{
+  "task_id": "D4-deps-crypto-jwt-2026-07-27",
+  "date": "2026-07-27",
+  "agent": "codex",
+  "verification_command": "../llm-router/.venv/bin/python -c \"import cryptography,jwt; print versions; from cryptography.fernet import Fernet\"",
+  "expected_signal": "cryptography >=42 + pyjwt >=2.8",
+  "actual_signal": "cryptography 49.0.0\njwt 2.13.0\nFernet imported OK",
+  "exit_code": 0,
+  "duration_ms": 54,
+  "side_effects": {
+    "warning": "hermes-agent venv requires cryptography==46.0.7; we installed 49.0.0 in master .venv (master is independent venv, hermes-agent uses /home/lin/.hermes/hermes-agent/venv/, not /home/lin/projects/llm-router/.venv/)"
+  },
+  "test_admin_auth_recovery": {
+    "before": "ModuleNotFoundError: No module named 'cryptography' (test_admin_auth.py collection ERROR)",
+    "after": "8 tests collected, 8 passed in 0.23s"
+  },
+  "outstanding_test_e2e_workflows": {
+    "8 failed": "pytest.mark.asyncio missing (async test support plugin not installed) — out of D4 scope",
+    "remediation": "D5 or D9 (out of v2 §6 coverage)"
+  },
+  "changed_paths": [
+    "pyproject.toml (added cryptography>=42, pyjwt>=2.8)",
+    ".venv/lib/python3.12/site-packages/cryptography-49.0.0.dist-info (pip installed)",
+    ".venv/lib/python3.12/site-packages/pyjwt-2.13.0.dist-info (pip installed)",
+    ".agent/task-manifest-d4-deps.yaml (new)"
+  ],
+  "next_step": "D2-A (tasks.md 同步) + D3 (OmniRoute 引) 并行 + D7 (lockfile 治理) 可并行"
+}

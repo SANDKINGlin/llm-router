@@ -1,0 +1,34 @@
+task_id: D4-deps-crypto-jwt-2026-07-27
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d4-deps
+branch: wt/deps-crypto-jwt
+allowed_paths:
+  - pyproject.toml
+forbidden_paths:
+  - mnfst/providers.yaml
+  - router-policy.yaml
+  - src/llm_router/admin/
+shared_paths: []
+contract_owner: codex
+verification:
+  fast: .venv/bin/python -c "from cryptography.fernet import Fernet; import jwt; import cryptography; print('cryptography',cryptography.__version__,'jwt',jwt.__version__)"
+  expected_signal: "cryptography >=42 + jwt >=2.8"
+  expected_versions: "(cryptography 49.0.0, pyjwt 2.13.0) >= (42, 2.8)"
+evidence_path: .harness/evidence/d4-deps-crypto-jwt.json
+notes: |
+  D4 装 cryptography 49.0.0 + pyjwt 2.13.0 到 master .venv/lib/python3.12/site-packages/.
+  (master .venv 是项目级 venv, 不是 hermes-agent venv. 两个独立. 不冲突).
+
+  pyproject.toml dependencies 段加 cryptography>=42, pyjwt>=2.8.
+
+  验证 (v2 §6):
+    - import cryptography + jwt 都能 import
+    - test_admin_auth.py 之前 ModuleNotFoundError, 现在能 collect 8 tests + 8 passed
+    - test_e2e_workflows.py 还有 8 FAIL 因 pytest-asyncio 缺, 不属 D4 范围
+
+ 副作用:
+    - pip install 写在 master .venv (不是 wt-d4), 因 wt-d4 没建独立 venv
+    - 装好 cryptography=49.0.0 >= 42 ✓ + pyjwt=2.13.0 >= 2.8 ✓
+    - hermes-agent venv 是独立隔离的 (不冲突)
+
+ next_step: D2-A (tasks.md 同步) + D3 (OmniRoute 引) 并行 + D7 (lockfile 治理)
