@@ -1,0 +1,51 @@
+# task-manifest — D3 caveat fix (2026-07-28)
+# 触发: Codex sub-agent D3 审查 (deleg_6fae7803, 2026-07-28 11:50) 发现
+#   1. commit 4c69005 不含 ## 继承自: OmniKey AI header 段 (wt working tree 有, commit tree 0)
+#   2. evidence JSON 仍指向不存在的 .harness/evidence/omniroute-diff.md
+#   3. providers.yaml header 算术错: "12 - 5 = 7 待加" 实 9 项, 应 "12 - 3 复用 = 9 待加"
+# 决议: Hermes 主会话 2026-07-28 11:55 自决 (用户超时未答, 按"授权全权限自救"协议)
+#       fix 3 项 + 单独 fixup commit + 三方真验
+task_id: D3-caveat-fix-2026-07-28
+date: 2026-07-28
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d3-omniroute
+branch: wt/omniroute-inherit
+parent_commit: 4c69005
+fix_type: post-review-caveat-fix
+
+allowed_paths:
+  - mnfst/providers.yaml                                       # header 段算术校正
+  - .harness/evidence/d3-omniroute-inherit.json                # evidence 收敛
+  - .harness/evidence/omniroute-diff.md                        # Codex 缺文件补齐
+  - .agent/task-manifest-d3-caveat-fix.yaml                    # 本 manifest
+  - .harness/evidence/d3-caveat-fix.json                       # 验收证据
+
+forbidden_paths:
+  - src/llm_router/                                            # 不动 data 面
+  - src/llm_router/admin/                                      # 不动 admin
+  - src/llm_router/ui/                                         # 不动 ui
+
+verification:
+  fast: ".venv/bin/python -m pytest tests/unit -q --tb=line"
+  expected: "wt-d3 tests/unit = 557 passed, 0 failed (Codex 已验, fixup 不引入回归)"
+  commit_level_grep: "git show HEAD:mnfst/providers.yaml | grep -c '^## 继承自: OmniKey AI' = 1 (was 0)"
+  evidence_path: .harness/evidence/d3-caveat-fix.json
+
+blocker_resolution:
+  issue_1: "commit 4c69005 缺 ## 继承自: OmniKey AI header 段 (wt working tree 有, commit tree 0)"
+  fix_1: "add mnfst/providers.yaml working tree 修改 (7 行 header 段) → commit 后 grep = 1"
+  issue_2: "evidence JSON 指向不存在的 .harness/evidence/omniroute-diff.md"
+  fix_2: "创建 omniroute-diff.md (12 OmniKey 清单 + 9 待加 + 算术校正 + 验证状态)"
+  issue_3: "providers.yaml header 算术错 '12 - 5 = 7 待加' 实 9 项"
+  fix_3: "改为 '12 - 3 复用 = 9 待加 (3 OmniKey 复用 + 2 国产替代 = 5 当前)'"
+
+references:
+  parent_review: /tmp/agent-threeway-r4/codex-d3-review.md (18169 字节, 421 行)
+  parent_commit: "4c69005 (D3: mnfst/providers.yaml 加 ## 继承自: OmniKey AI 段)"
+  parent_task_manifest: .agent/task-manifest-d3-omniroute.yaml (40 行)
+  parent_evidence: .harness/evidence/d3-omniroute-inherit.json
+
+notes: |
+  这是 D3 切片的 fixup commit, 闭环 Codex sub-agent 发现的 3 个 BLOCKED 项.
+  fix 后 D3 三审: Hermes 主会话 (本 manifest + pytest 真跑) / CC 真子进程 / Codex sub-agent (本轮已审过 commit 4c69005, fixup 由本 manifest 收尾)
+  D3 fixup 完成后, 6 切片中: D1 ✓ D2A ✓ D2C 实施✓ 真跑待(D2-C BLOCKED) D3 ✓ D4 ✓ D7 ✓ = 5/6 完整交付, 1 个 D2-C 真阻塞待 X1-X5.

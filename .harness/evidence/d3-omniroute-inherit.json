@@ -1,0 +1,68 @@
+{
+  "task_id": "D3-omniroute-inherit-2026-07-27",
+  "date": "2026-07-28",
+  "agent": "codex",
+  "status": "PASS-WITH-CAVEATS",
+  "fix_commits": [
+    "4c69005c067f4296c88860f48e64ef46758e8b02 (D3 原始提交)",
+    "1f15aab61cc8e5437b1fcb38ad50f0c50fc5bf7d (Codex 审查 3 BLOCKED 闭环)",
+    "cbb911b1910a0df8e34e45acefb4b350a2ac95c5 (evidence 5/5 真验闭环)"
+  ],
+  "verification_command": "git show HEAD:mnfst/providers.yaml | grep -c '^## 继承自: OmniKey AI'",
+  "expected_signal": "1",
+  "actual_signal": "1",
+  "exit_code": 0,
+  "verification_date": "2026-07-28T17:43:00+08:00",
+  "verification_branch": "wt/omniroute-inherit",
+  "verification_worktree": "/home/lin/projects/llm-router-wt-d3-omniroute",
+  "provider_diff": {
+    "omni_key_total": 12,
+    "omni_key_reused_3": "openrouter, groq, nvidia (源清单 12 内同名复用)",
+    "llm_router_current_active_5": "openrouter, groq, nvidia + agnes, modelscope (前 3 同源, 后 2 国产等效)",
+    "to_add_7_oversea_blocked": "cerebras, mistral, github_models, sambanova, cohere, cloudflare, huggingface (脏 IP 风控, 默认不启用)",
+    "to_add_z_ai_china_ok": "z_ai (用户 ZHIPU_API_KEY 已装, 可启用, 但本次不启用)",
+    "to_add_gemini_blocked": "gemini (Google 直连风控, 不启用)",
+    "to_add_total": 9,
+    "math_correction": "v2 §3 写 '12 - 5 = 7 待加' 错, 真 = 12 - 3 复用 = 9 待加 (含 z_ai + gemini)"
+  },
+  "key_correction": {
+    "wrong_omni_url": "https://github.com/Intelligent-Internet/OmniRoute (v2 §3 third 轮归档误写, 真仓库不存在)",
+    "correct_omni_url": "https://github.com/Felix-au/OmniKey-AI-Unified-Key-Manager",
+    "stars": 68,
+    "license": "MIT",
+    "pushed_at": "2026-07-10T03:32:38Z",
+    "verification": "curl https://api.github.com/repos/Felix-au/OmniKey-AI-Unified-Key-Manager 返回 200, all fields true"
+  },
+  "old_url_verify": {
+    "command": "git ls-remote https://github.com/Intelligent-Internet/OmniRoute.git",
+    "exit_code": 128,
+    "result": "Repository not found (404)"
+  },
+  "header_verify": {
+    "command": "git show HEAD:mnfst/providers.yaml | grep -nE '^(## 继承自: OmniKey AI|providers:)'",
+    "result": "header 在第 14 行, providers: 在第 21 行 (header 在前, 顺序正确)"
+  },
+  "diff_doc_added": ".harness/evidence/omniroute-diff.md (103 行, 含 12 OmniKey 清单 + 9 待加 + 算术校正)",
+  "test_verify": {
+    "wt_unit": "557 passed, 3 skipped, 1 warning in 25.02s (exit 0)",
+    "master_unit_baseline": "8 failed (历史背景 fail, 不属 D3 切片, 不引入新回归)"
+  },
+  "changed_paths": [
+    "mnfst/providers.yaml (+40 + 7 = 47 lines)",
+    ".agent/task-manifest-d3-omniroute.yaml (new)",
+    ".harness/evidence/d3-omniroute-inherit.json (this file)",
+    ".harness/evidence/omniroute-diff.md (new, 103 lines)",
+    ".agent/task-manifest-d3-caveat-fix.yaml (new)",
+    ".harness/evidence/d3-caveat-fix.json (new)"
+  ],
+  "next_step": "D5 (OpenSpec CI 脚本) + D6 (终归档三遍) + D2-X (admin 双层鉴权 secret 统一)",
+  "verdict": "PASS",
+  "notes": [
+    "D3 提交树 header 已修复 (commit 1f15aab 闭环 Codex 审查 3 BLOCKED)",
+    "diff 文档已补 (.harness/evidence/omniroute-diff.md)",
+    "算术已校正 (3 复用 + 9 待加 = 12)",
+    "Felix-au URL 已验证 (200, 68 stars, MIT, pushed_at 2026-07-10)",
+    "wt unit 557 passed 0 failed (Codex 审查后 fixup 不引入回归)",
+    "PASS-WITH-CAVEATS: 仅扩清单不启用, 后续启用需另开切片逐项验证"
+  ]
+}

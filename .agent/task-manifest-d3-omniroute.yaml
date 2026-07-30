@@ -1,0 +1,39 @@
+task_id: D3-omniroute-inherit-2026-07-27
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d3-omniroute
+branch: wt/omniroute-inherit
+allowed_paths:
+  - mnfst/providers.yaml
+forbidden_paths:
+  - router-policy.yaml
+  - src/
+shared_paths: []
+contract_owner: codex
+verification:
+  fast: grep -c "^## 继承自: OmniKey AI" mnfst/providers.yaml
+  expected_signal: "1"
+expected_signal_2: "12 OmniKey providers - 5 当前 = 7 + z_ai + gemini = 9 待加 (含 Z.ai 国产可启用)"
+evidence_path: .harness/evidence/d3-omniroute-inherit.json
+notes: |
+  D3 切片: 引 OmniKey AI provider list (5 -> 12+9 待加), 升 mnfst/providers.yaml
+  ## 继承自: 段.
+
+  ⚠️ 关键更正: v2 §3 third 轮归档 (7-25 ObsidianVault) 写的
+  "Intelligent-Internet/OmniRoute" GitHub 不存在.
+  真 OmniRoute 仓库地址 = Felix-au/OmniKey-AI-Unified-Key-Manager
+  (68 stars MIT, 2026-07-10 pushed, 12 free LLM providers).
+
+  当前 5 个 provider 启用: groq/nvidia/openrouter/agnes/modelscope
+  OmniKey 12 真名: Gemini/OpenRouter/Cerebras/Groq/Mistral/GitHub Models/SambaNova/Cohere/Cloudflare/Z.ai/HuggingFace/NVIDIA
+
+  比对:
+    已复用 5/12: openrouter/groq/nvidia + 国产 agnes/modelscope (不属 OmniKey 12 但等效国产)
+    缺 7 个海外直连 (脏 IP 风控默认不启用): Cerebras/Mistral/GitHub Models/SambaNova/Cohere/Cloudflare/HuggingFace
+    缺 Z.ai/Zhipu 国产 (用户已有 ZHIPU_API_KEY, 可启用 → 用户原话提到, 但本次不启用)
+    缺 Gemini (Google 直连风控 = 不启用)
+
+  决议: 仅扩清单 (不启用). 9 个待启用 provider 加 ## 继承自: 段,
+  按风控红线地图默认注释 (user 真用时取消注释).
+
+ next_step: D2-C mount :8789/admin/* (depends D4 ✓ done)
+        + D7 lockfile 治理 (并行)
