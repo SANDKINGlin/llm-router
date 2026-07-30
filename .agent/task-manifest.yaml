@@ -1,0 +1,53 @@
+schema_version: 1
+status: ACTIVE
+task_id: llm-router-harness-pilot
+owner_agent: hermes
+worktree_path: /home/lin/projects/llm-router
+branch: master
+non_git_exception: null
+allowed_paths:
+  - AGENTS.md
+  - .agent/task-manifest.yaml
+  - .harness/manifest.yaml
+  - .harness/evidence.schema.json
+  - .harness/runner.py
+  - .harness/build_evidence.py
+  - .harness/pre-commit-assessment.md
+forbidden_paths:
+  - src/**
+  - tests/**
+  - router-policy.yaml
+  - mnfst/**
+  - pyproject.toml
+shared_paths:
+  - router-policy.yaml
+  - mnfst/providers.yaml
+shared_paths_policy:
+  default_access: READ_ONLY
+  writable_only_by: contract_owner
+contract_owner: user-existing-worktree
+path_conflict_policy:
+  allowed_vs_forbidden: BLOCKED
+verification:
+  fast:
+    commands:
+      - .venv/bin/python -m pytest tests/unit -q
+    required: true
+  medium:
+    commands:
+      - .venv/bin/python -m pytest tests/unit -q
+      - .venv/bin/python -m pytest tests/integration -q
+    required: true
+  slow:
+    commands:
+      - .venv/bin/python -m pytest tests/e2e -q
+    required: true
+evidence_path: /tmp/llm-router-harness-pilot-evidence
+rollback:
+  command: remove only the seven allowed new Harness paths after confirming status
+  backup_path: NOT_APPLICABLE_NEW_FILES
+completion:
+  require_changed_paths_match: true
+  require_machine_readable_evidence: true
+  require_threeway_verification: true
+allowed_verdicts: [PASS, FAIL, BLOCKED, NOT_APPLICABLE]

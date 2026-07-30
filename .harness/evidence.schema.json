@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-router.local/harness/evidence.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "task_id",
+    "commit",
+    "changed_paths",
+    "verifications",
+    "threeway",
+    "verdict",
+    "verdict_reason",
+    "builder"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "commit": {"type": ["string", "null"]},
+    "changed_paths": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "verifications": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/verification"}
+    },
+    "threeway": {
+      "type": "object",
+      "required": ["cc", "codex", "hermes"],
+      "properties": {
+        "cc": {"$ref": "#/$defs/review"},
+        "codex": {"$ref": "#/$defs/review"},
+        "hermes": {"$ref": "#/$defs/review"}
+      },
+      "additionalProperties": false
+    },
+    "verdict": {"enum": ["PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"]},
+    "verdict_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable explanation of how the overall verdict was derived."
+    },
+    "builder": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Builder identity, e.g. 'build_evidence.py S7.1.2 (strict-verdict + empty-profile-guard)'."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "verification": {
+      "type": "object",
+      "required": ["profile", "command", "exit_code", "duration_ms", "status", "artifact"],
+      "properties": {
+        "profile": {"enum": ["fast", "medium", "slow"]},
+        "command": {"type": ["string", "array"]},
+        "exit_code": {"type": "integer"},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "status": {"enum": ["PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"]},
+        "artifact": {"type": ["string", "null"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "PASS"}}},
+          "then": {"properties": {"exit_code": {"const": 0}}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "required": ["artifact", "verdict", "exists", "size_bytes", "parsed", "hit_line", "raw"],
+      "properties": {
+        "artifact": {"type": "string", "minLength": 1},
+        "verdict": {"enum": ["PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"]},
+        "exists": {"type": "boolean"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "parsed": {"type": "boolean"},
+        "hit_line": {"type": "integer", "minimum": 0},
+        "raw": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "description": "parsed=False implies verdict=BLOCKED",
+          "if": {"properties": {"parsed": {"const": false}}},
+          "then": {"properties": {"verdict": {"const": "BLOCKED"}}}
+        },
+        {
+          "description": "exists=False implies size_bytes=0 and verdict=BLOCKED",
+          "if": {"properties": {"exists": {"const": false}}},
+          "then": {
+            "properties": {
+              "size_bytes": {"const": 0},
+              "verdict": {"const": "BLOCKED"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}
