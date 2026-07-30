@@ -99,8 +99,7 @@ def advance(
         to_provider: 即将尝试的 provider。
     """
     assert reason in HOP_REASONS, f"unknown reason: {reason}"
-    if reason in ("initial", "budget_exhausted"):
-        raise ValueError(f"{reason!r} 是特殊态,不能由 advance 产出")
+    assert reason not in ("initial", "budget_exhausted"), f"{reason!r} 是特殊态,不能由 advance 产出"
     return HopAttribution(
         depth=current_depth + 1,
         reason=reason,
