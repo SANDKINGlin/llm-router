@@ -1,0 +1,32 @@
+task_id: D1-failfix-2026-07-27
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d1-failfix
+branch: wt/failfix-8-fail
+allowed_paths:
+  - src/llm_router/app.py
+  - tests/
+forbidden_paths:
+  - mnfst/providers.yaml
+  - router-policy.yaml
+  - src/llm_router/admin/
+shared_paths: []
+contract_owner: codex
+verification:
+  fast: .venv/bin/python -m pytest tests/unit -q
+  expected_exit: 0
+  expected_signal: "0 failed, 557 passed, 3 skipped"
+  duration_ms_target: 30000
+evidence_path: .harness/evidence/d1-failfix.json
+notes: |
+  D1 8 FAIL 真因已诊断: master app.py:301 uncommitted 改写为
+  run_cold_migrator_loop(..., interval=86400.0, ...), 但 trace.py:600 形参是
+  *, interval_seconds: float (keyword-only). fix = interval= → interval_seconds=.
+
+  但是: wt-d1-failfix base = master @ 08ebbb8 不含 uncommitted 修改,
+  故 wt 内 run_cold_migrator_loop 调用行不在 src/llm_router/app.py 里
+  (diff 295-309 master vs wt). wt 跑 fast profile = 0 failed (557 passed).
+
+  本切片决议 = 不改 wt (已 0 failed), 因为如果改 wt 要么得 git apply master
+  uncommitted diff 进 wt 再改, 这违反 wt 协议 (uncommitted 不属于 wt),
+  要么直接在 master 上改, 也违反 wt 协议 (master 已用). D1 = sign-off + 
+  evidence 留 (D1 patch = 修复 master uncommitted 一致性).
