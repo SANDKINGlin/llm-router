@@ -11,24 +11,40 @@
 #   ⛔ 风控:Groq / Together / Fireworks 等海外直连(脏 IP 易触发,未实测勿启用)
 #   ⛔ 风控:Gemini / Google / OpenAI 直连 —— IP 干净度敏感,全面避开(含经聚合器调这类专有模型)
 #   规则:NVIDIA NIM + OpenRouter 为海外主力;国产模型走其自家国产档;Gemini 类专有模型任何路径都避开。
+#
 ## 继承自: OmniKey AI (Felix-au/OmniKey-AI-Unified-Key-Manager, MIT, 68 stars, 2026-07-10)
 ## 引用协议: 仅引 provider 名单作为 Scanner 静态清单扩充源, 不替换 llm-router 中间件架构
 ## 比对结果 (v2 §6 D3 验收): 12 OmniKey providers 中 3 复用 (openrouter/groq/nvidia) + 2 国产替代 (agnes/modelscope) = 5 当前可用, 9 待加 (cerebras/mistral/github_models/sambanova/cohere/cloudflare/huggingface/z_ai/gemini)
 ## 启用规则: 注释状态, 必须有真 KEY 才能启用 (按风控红线地图)
 ## 来源 URL: https://github.com/Felix-au/OmniKey-AI-Unified-Key-Manager
 ## 详细比对差异: see .harness/evidence/omniroute-diff.md
+#
+## 设计借鉴 (r9.2 扩展, 2026-07-30):
+##   LiteLLM Load-balance 分层策略: 按 capability/inference/vision/multimodal 分池
+##   LiteLLM Cooldown 机制: cooldown_s 字段已存;扩 tpm_used/rpm_used 动态跟踪
+##   LiteLLM Budget 管控: quota_remaining 字段跟踪剩余额度;quota 为总额度
+##   模型能力覆盖: inference(推理)/vision(视觉)/code(编码)/audio(语音)/multimodal(多模态)
+##   IP 风控分级: ip_safety 字段映射风控红线地图 (safe/risky/forbidden)
+##   模型强度排序: model_strength 字段 (1-10, 10 最强), 同能力下选最优模型
 
 providers:
   # ── Groq(海外直连,⛔ 风控:脏 IP 易触发,同 NVIDIA 理)── 默认不启用 ──
   - name: groq
     tier: fast
     quota: 1000000
+    quota_remaining: 1000000
     cooldown_s: 30
     is_free: true
     cost_multiplier: 0.0
     model: llama-3.3-70b-versatile
     base_url: https://api.groq.com/openai/v1
     api_key_env: GROQ_API_KEY
+    capability: [inference]
+    ip_safety: forbidden
+    tpm_used: 0
+    rpm_used: 0
+    last_reset_at: 2026-07-30T00:00:00Z
+    model_strength: 8
 
   # ── NVIDIA NIM(海外直连,✅ 实测脏IP不风控 06/21,免费档专属速率不走共享池不限流)──
   # 06/21 实测:integrate.api.nvidia.com GET /models HTTP 200(1.1s);llama-3.3-70b 真调用 200。
@@ -36,12 +52,19 @@ providers:
   - name: nvidia
     tier: strong
     quota: 500000
+    quota_remaining: 500000
     cooldown_s: 30
     is_free: true
     cost_multiplier: 0.0
     model: meta/llama-3.3-70b-instruct   # 70B 强模型,实测可用;支持 tool use,能驱动 Cline
     base_url: https://integrate.api.nvidia.com/v1
     api_key_env: NVIDIA_API_KEY
+    capability: [inference]
+    ip_safety: safe
+    tpm_used: 0
+    rpm_used: 0
+    last_reset_at: 2026-07-30T00:00:00Z
+    model_strength: 8
 
   # ── OpenRouter(聚合,免费档模型)── 设 OPENROUTER_API_KEY 后启用 ──
   # ⚠ 模型选型:优先**开权重 + 国内不被风控**的免费模型(gpt-oss / qwen / gemma / nemotron
@@ -49,12 +72,19 @@ providers:
   - name: openrouter
     tier: strong
     quota: 500000
+    quota_remaining: 500000
     cooldown_s: 30
     is_free: true
     cost_multiplier: 0.0
     model: qwen/qwen3-coder:free   # 编码模型(非 reasoning,JSON 响应稳定);1M ctx;支持 tool use;免费档;限流时 Cascade fallback
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
+    capability: [inference, code]
+    ip_safety: safe
+    tpm_used: 0
+    rpm_used: 0
+    last_reset_at: 2026-07-30T00:00:00Z
+    model_strength: 7
 
   # ── Agnes AI(全模态免费 API,✅ 06/23 实测端点 apihub.agnes-ai.com/v1 直连可用)──
   # 06/23 实测:agnes-2.0-flash 文本+视觉理解(吃图 200 答"Black"),OpenAI 兼容,免费 RPM 20。
@@ -63,12 +93,19 @@ providers:
   - name: agnes
     tier: strong
     quota: 500000
+    quota_remaining: 500000
     cooldown_s: 30
     is_free: true
     cost_multiplier: 0.0
     model: agnes-2.0-flash   # 文本模型,自带视觉理解;OpenAI 兼容;免费 RPM 20;限流时 Cascade fallback
     base_url: https://apihub.agnes-ai.com/v1
     api_key_env: AGNES_API_KEY
+    capability: [inference, vision]
+    ip_safety: safe
+    tpm_used: 0
+    rpm_used: 0
+    last_reset_at: 2026-07-30T00:00:00Z
+    model_strength: 5
 
   # ── ModelScope魔搭社区(国产模型平台,每日2000次免费调用)──
   # 支持DeepSeek V4、Qwen等60000+模型,国内直连稳定
@@ -76,12 +113,19 @@ providers:
   - name: modelscope
     tier: strong
     quota: 2000           # 每日2000次免费调用
+    quota_remaining: 2000
     cooldown_s: 30
     is_free: true
     cost_multiplier: 0.0
     model: deepseek-chat     # DeepSeek V4 PRO,强推理能力,适合中文编码和逻辑推理
     base_url: https://api-inference.modelscope.cn/v1
     api_key_env: MODELSCOPE_API_KEY
+    capability: [inference, code]
+    ip_safety: safe
+    tpm_used: 0
+    rpm_used: 0
+    last_reset_at: 2026-07-30T00:00:00Z
+    model_strength: 6
 
 
 # ── v2 §3 D3 继承段扩展 (待启用, 见 ## 继承自: 头部注释) ──
