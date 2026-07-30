@@ -44,6 +44,9 @@ HOP_REASONS: frozenset[str] = frozenset(
         "budget_exhausted",  # 重试预算耗尽,链终止
         "rate_limited",  # 上一 provider 返 429(归 hard_failure 类)
         "provider_removed_during_rollback",  # provider 在 rollback 中被移除
+        "capability_mismatch",  # 能力不匹配(如:推理→视觉需自动切换)
+        "ip_safety_skip",  # 跳过 IP 风险 provider(脏 IP 避让)
+        "quota_exhausted",  # 额度耗尽(仿 LiteLLM Budget,同 budget_exhausted)
     }
 )
 
@@ -92,14 +95,16 @@ def advance(
 
     Args:
         current_depth: 上一跳的 depth(新跳 = current_depth + 1)。
-        reason: 为何跳变(必须 ∈ HOP_REASONS,且非 initial/budget_exhausted 这两个
+        reason: 为何跳变(必须 ∈ HOP_REASONS,且非 initial/budget_exhausted/quota_exhausted 这三个
             特殊态——initial 只能由 initial_attribution 产出,budget_exhausted 由
-            budget_exhausted() 产出)。
+            budget_exhausted() 产出,quota_exhausted 同为终态)。
         from_provider: 被放弃的 provider。
         to_provider: 即将尝试的 provider。
     """
-    assert reason in HOP_REASONS, f"unknown reason: {reason}"
-    assert reason not in ("initial", "budget_exhausted"), f"{reason!r} 是特殊态,不能由 advance 产出"
+    if reason not in HOP_REASONS:
+        raise HopReasonError(f"unknown reason: {reason}")
+    if reason in ("initial", "budget_exhausted", "quota_exhausted"):
+        raise HopReasonError(f"{reason!r} 是特殊态,不能由 advance 产出")
     return HopAttribution(
         depth=current_depth + 1,
         reason=reason,
@@ -143,3 +148,8 @@ def parse_attribution(raw: Optional[str]) -> Optional[HopAttribution]:
         from_provider=d.get("from"),
         to_provider=d.get("to"),
     )
+
+
+class HopReasonError(ValueError):
+    """未知的 hop reason 抛此异常(替代裸 AssertionError)."""
+    pass
