@@ -42,6 +42,8 @@ HOP_REASONS: frozenset[str] = frozenset(
         "hard_failure",  # 上一 provider 硬失败(超时/5xx/异常)
         "soft_content",  # 上一 provider 内容残缺(软失败)
         "budget_exhausted",  # 重试预算耗尽,链终止
+        "rate_limited",  # 上一 provider 返 429(归 hard_failure 类)
+        "provider_removed_during_rollback",  # provider 在 rollback 中被移除
     }
 )
 
@@ -96,10 +98,9 @@ def advance(
         from_provider: 被放弃的 provider。
         to_provider: 即将尝试的 provider。
     """
-    assert reason in HOP_REASONS, f"未知跳变原因 {reason!r}"
-    assert reason not in ("initial", "budget_exhausted"), (
-        f"{reason!r} 是特殊态,不能由 advance 产出"
-    )
+    assert reason in HOP_REASONS, f"unknown reason: {reason}"
+    if reason in ("initial", "budget_exhausted"):
+        raise ValueError(f"{reason!r} 是特殊态,不能由 advance 产出")
     return HopAttribution(
         depth=current_depth + 1,
         reason=reason,

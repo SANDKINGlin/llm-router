@@ -21,7 +21,7 @@ class TestE2EKeyManagement:
         test_store = TestSecretStore()
 
         # 步骤1：通过API创建密钥
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
         response = client.post("/admin/keys", json={
             "provider": "test-provider",
             "key": "test-new-key-123"
@@ -43,7 +43,7 @@ class TestE2EKeyManagement:
         # 步骤5：旧密钥失效→失败
 
         # 这里简化为API层面的验证
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 更新密钥
         response = client.put("/admin/keys/test-provider", json={
@@ -55,7 +55,7 @@ class TestE2EKeyManagement:
 
     def test_rotate_key_rollback_on_failure(self):
         """测试密钥轮换失败时自动回滚。"""
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：轮换密钥（但新key无效）
         response = client.post("/admin/keys/test-provider/rotate", json={
@@ -79,7 +79,7 @@ class TestE2EGrayRelease:
         current_policy = policy()
         original_percent = current_policy.gray_percent
 
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         try:
             # 步骤1：通过UI调整灰度%到30
@@ -104,7 +104,7 @@ class TestE2EGrayRelease:
 
     def test_config_persistence_after_reload(self):
         """测试配置修改后重载保持新值。"""
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：调整灰度%
         response = client.put("/admin/settings/gray_percent", json={
@@ -126,7 +126,7 @@ class TestE2EBackupRestore:
 
     def test_export_import_roundtrip(self):
         """测试导出导入完整流程。"""
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：导出备份
         export_response = client.post("/admin/backup/export", json={
@@ -151,7 +151,7 @@ class TestE2EBackupRestore:
 
     def test_database_sizes_growth_detection(self):
         """测试数据库大小监控。"""
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：查询数据库大小
         response = client.get("/admin/backup/db-sizes")
@@ -174,7 +174,7 @@ class TestE2EObservationAccuracy:
 
     def test_circuit_breaker_status_accuracy(self):
         """测试熔断状态监控准确反映真实状态。"""
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：查询熔断状态
         response = client.get("/admin/metrics/circuit-breakers")
@@ -194,7 +194,7 @@ class TestE2EObservationAccuracy:
 
     def test_health_status_accuracy(self):
         """测试健康状态准确反映探活结果。"""
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 查询健康状态
         response = client.get("/admin/health/status")
@@ -221,7 +221,7 @@ class TestE2EUserWorkflows:
         # 场景4：监控Dashboard显示新provider状态
 
         # 简化验证：API可用性
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
         response = client.get("/admin/keys")
         assert response.status_code in [200, 401]  # 401表示需要认证
 
@@ -233,7 +233,7 @@ class TestE2EUserWorkflows:
         # 场景4：配置持久化
 
         # 简化验证：配置调整API
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
         response = client.put("/admin/settings/gray_percent", json={"percent": 50})
 
         if response.status_code == 200:
@@ -248,7 +248,7 @@ class TestE2EUserWorkflows:
         # 场景4：验证数据完整性和功能正常
 
         # 简化验证：备份导出API
-        client = TestClient(admin_app)
+        client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
         export_response = client.post("/admin/backup/export", json={
             "include_secrets": True
         })

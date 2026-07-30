@@ -305,11 +305,20 @@ class Cascade:
                 )
 
             # ② 本跳归因(首跳 initial;之后 reason=上一跳失败原因,from=上一 provider)。
-            attr = (
-                initial_attribution(name)
-                if idx == 0
-                else advance(idx - 1, last_reason, prev_provider, name)
-            )
+            # 映射:rate_limited/provider_removed_during_rollback → hard_failure(归 hard_failure 类,计入失败)。
+            try:
+                if last_reason in ("rate_limited", "provider_removed_during_rollback"):
+                    mapped_reason = "hard_failure"
+                else:
+                    mapped_reason = last_reason
+                attr = (
+                    initial_attribution(name)
+                    if idx == 0
+                    else advance(idx - 1, mapped_reason, prev_provider, name)
+                )
+            except AssertionError:
+                # 契约破裂:未知 reason → 返失败 result,不抛(避免 ASGI 500)
+                return CascadeResult(None, None, False, attempted, "hop_reason_error")
 
             # ③ acquire trace 行(parent 指上一跳,串 fallback 链)。
             out = await self._store.acquire(

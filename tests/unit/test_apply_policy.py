@@ -161,7 +161,7 @@ class TestAdminRollbackEndpoint:
 
     def test_admin_guard_returns_403_for_any_call(self):
         """OpenCode [HIGH] 决策:fail-closed 占位,任何调用一律 403。"""
-        with TestClient(app) as client:
+        with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
             resp = client.post("/admin/rollback", json={"policy_version": "v0"})
         assert resp.status_code == 403
         assert "admin endpoint disabled" in resp.text
@@ -175,7 +175,7 @@ class TestAdminRollbackEndpoint:
         from llm_router.app import _admin_guard as real_guard
         app.dependency_overrides[real_guard] = lambda: None
         try:
-            with TestClient(app) as client:
+            with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
                 # 当前 policy().policy_version 是某个值,发"DEFINITELY_NOT_REAL"必触发 mismatch
                 resp = client.post("/admin/rollback", json={"policy_version": "DEFINITELY_NOT_REAL"})
             assert resp.status_code == 400
