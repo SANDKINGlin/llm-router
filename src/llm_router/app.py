@@ -292,6 +292,21 @@ def _make_lifespan(
                     )
         app.state.scanner_task = scanner_task
         app.state.scanner_store = scanner_store
+        # P0-1 修复:启动冷数据迁移循环
+        migrator_task = None
+        trace_store = getattr(cascade, "_store", None)
+        if trace_store is not None:
+            from .store.trace import run_cold_migrator_loop
+            migrator_task = asyncio.create_task(
+                run_cold_migrator_loop(
+                    trace_store,
+                    stop_event,
+                    interval_seconds=86400.0,  # 24小时执行一次
+                    max_age_seconds=7*86400.0,  # 迁移7天前的数据
+                    batch_size=500,
+                )
+            )
+        app.state.migrator_task = migrator_task
         try:
             yield
         finally:
@@ -310,6 +325,12 @@ def _make_lifespan(
                 # DynamicScanner.run_loop tick 异常自处理(不崩循环),await 不会抛。
                 try:
                     await scanner_task
+                except asyncio.CancelledError:
+                    pass
+            if migrator_task is not None:
+                # 同 probe 优雅退出:迁移循环在 stop_event 唤醒后退出
+                try:
+                    await migrator_task
                 except asyncio.CancelledError:
                     pass
             if scanner_store is not None:
@@ -455,22 +476,61 @@ async def openai_chat(req: _OpenAIRequest, request: Request):
         async def _true_stream():
             # 真流式:挑首幸存候选(health+cost+CB 过滤后 plan 链首),pipe SDK chunk 到 SSE。
             # 首 chunk 前 ProviderError → 放弃流式,回退非流式 _cascade.run(完整 fallback)包单 chunk。
+            # router-stream-trace-observability T1:流式 happy path 补 trace acquire/commit
+            # (首 chunk 成功后 acquire,流完成/截断 commit)。此前流式绕过 _cascade.run →
+            # trace 零记录,监控读热表完全看不到 Cline 等真实 agent 的主流式流量。
+            correlation_id = uuid.uuid4().hex
+            first_sent = False
+            acq = None
+            stream_provider = None
+            collected: list[str] = []
             try:
-                provider = await _pick_stream_provider(_extract_session_id(request))
-                first_sent = False
-                async for chunk in provider.complete_stream(
+                stream_provider = await _pick_stream_provider(_extract_session_id(request))
+                async for chunk in stream_provider.complete_stream(
                     messages, tools=req.tools, tool_choice=req.tool_choice
                 ):
+                    if not first_sent:
+                        # 首 chunk 成功 → 流式真正用了此 provider,补 trace acquire。
+                        # (pre-first-chunk 失败走下方 fallback,不 acquire → 无孤儿 pending 行)
+                        await _cascade._ensure_store()
+                        acq = await _cascade._store.acquire(
+                            correlation_id=correlation_id,
+                            idempotency_key=f"{correlation_id}#stream",
+                            provider=stream_provider.name,
+                        )
                     first_sent = True
+                    try:  # 收集 delta.content 作 trace result(诊断可读)
+                        _d = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+                        if _d:
+                            collected.append(str(_d))
+                    except Exception:
+                        pass
                     yield f"data: {_json.dumps(chunk)}\n\n"
                 yield "data: [DONE]\n\n"
+                if acq is not None:
+                    await _cascade._store.commit(
+                        trace_id=acq.trace_id,
+                        result="".join(collected) or "stream-ok",
+                        hop_attribution=_json.dumps(
+                            {"depth": 0, "reason": "stream", "from": None, "to": stream_provider.name}
+                        ),
+                    )
                 return
             except (ProviderError, StopAsyncIteration, RuntimeError):
                 if first_sent:
-                    # 首 chunk 已发,流中途失败 → 结束流(不 fallback,已发数据无法撤回)
+                    # 首 chunk 已发,流中途失败 → 结束流(不 fallback,已发数据无法撤回);commit 截断结果
+                    if acq is not None:
+                        await _cascade._store.commit(
+                            trace_id=acq.trace_id,
+                            result="".join(collected) or "[stream-truncated]",
+                            hop_attribution=_json.dumps(
+                                {"depth": 0, "reason": "stream-truncated", "from": None,
+                                 "to": stream_provider.name if stream_provider else None}
+                            ),
+                        )
                     yield "data: [DONE]\n\n"
                     return
-                # 首 chunk 前失败 → 回退非流式 _cascade.run,包成单 chunk SSE
+                # 首 chunk 前失败 → 回退非流式 _cascade.run(它自己 trace,本流未 acquire 无孤儿),包成单 chunk SSE
             # 非流式 fallback
             result = await _cascade.run(
                 messages, correlation_id=uuid.uuid4().hex,
