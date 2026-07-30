@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 
 _POLICY_PATH = Path(__file__).resolve().parents[2] / "router-policy.yaml"
 
+# IP 安全等级映射（r9.3 排序键第1 维）
+IP_SAFETY_RANK = {"safe": 0, "risky": 1, "forbidden": 2}
+
 
 class ProviderEntry(BaseModel):
     """单个 provider 的策略配置(蓝图 §4 S1.3)。
@@ -41,6 +44,7 @@ class ProviderEntry(BaseModel):
     cooldown_s: int
     is_free: bool
     cost_multiplier: float
+    ip_safety_rank: Literal["safe", "risky", "forbidden"] = "safe"
     model: str | None = None
     base_url: str | None = None
     api_key_env: str | None = None
@@ -52,6 +56,15 @@ class Policy(BaseModel):
     gray_percent: int = 100
     providers: list[ProviderEntry] = Field(default_factory=list)
     tiers: dict = Field(default_factory=dict)
+    sort_keys: list[str] = Field(
+        default_factory=lambda: [
+            "ip_safety_rank",  # 越小越优先 (safe=0 < risky=1 < forbidden=2)
+            "is_free",         # true(0) < false(1), 免费优先
+            "quota_remaining", # 越大越优先 (desc)
+            "capability_match", # match(0) < mismatch(1), 能力匹配优先
+            "model_strength"   # 越大越优先 (desc), 同能力下选最强
+        ]
+    )
 
 
 _policy: Policy | None = None
