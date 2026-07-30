@@ -1,4 +1,4 @@
-"""Admin REST API (:8790)。密钥管理、监控、配置热重载。"""
+"""Admin REST API (was :8790 standalone, v2 D2-C mount 进 :8789 /admin/* via SharedASGIMiddleware)。密钥管理、监控、配置热重载。"""
 from __future__ import annotations
 
 import os

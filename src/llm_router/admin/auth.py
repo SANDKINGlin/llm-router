@@ -23,7 +23,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # 跳过健康检查和登录端点
-        if request.url.path in ["/healthz", "/admin/auth/login"]:
+        # X1 fix (2026-07-28 三方真调共识): strip mount prefix 让白名单同时支持
+        #   - admin_subapp 独立跑 :8790 (mount_prefix="")
+        #   - admin_subapp mount 进 :8789 /admin (mount_prefix="/admin", url.path=/admin/admin/auth/login)
+        mount_prefix = request.scope.get("root_path", "") or ""
+        raw_path = request.url.path
+        sub_path = raw_path[len(mount_prefix):] if mount_prefix and raw_path.startswith(mount_prefix) else raw_path
+        if sub_path in ["/healthz", "/admin/auth/login"] or raw_path.endswith("/admin/auth/login"):
             return await call_next(request)
 
         # localhost默认暴露

@@ -41,6 +41,12 @@ from .store.health_store import HealthStore
 from .store.scanner_store import ScannerStore, load_active_models_sync
 from .store.token_ledger import LedgerStore
 from .store.trace import TraceStore
+# D2-C: mount admin sub-application into :8789 /admin/* path.
+# cryptography 缺时 (D4 切片) skip mount 不崩
+try:
+    from .admin.app import admin_app as admin_subapp
+except ImportError:
+    admin_subapp = None
 
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 _SCANNER_DB = _DATA_DIR / "scanner.db"
@@ -354,6 +360,14 @@ app = FastAPI(
         scanner_factory_resolver=lambda: _production_scanner_factory,
     ),
 )
+
+
+# D2-C: mount admin sub-application into :8789 /admin/* path.
+# Admin 模块以前设计独立跑 :8790 (admin/app.py 头注释), v2 D2-C 决议 mount 进数据面同一进程.
+# 挂载策略: app.mount 共享 lifespan, admin_subapp 用 SharedASGIMiddleware.
+# 无 admin_subapp (cryptography 缺 / D4 切片) 时 skip mount 不崩.
+if admin_subapp is not None:
+    app.mount("/admin", admin_subapp)
 
 
 class _Message(BaseModel):

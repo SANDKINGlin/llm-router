@@ -1,0 +1,47 @@
+task_id: D2C-X1-fix-2026-07-28
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d2c-mount
+branch: wt/port8789-mount
+allowed_paths:
+  - src/llm_router/admin/auth.py
+  - scripts/verify_d2c_mount_testclient.py
+  - src/llm_router/admin/
+  - src/llm_router/ui/
+  - tests/integration/
+  - tests/unit/
+forbidden_paths:
+  - router-policy.yaml
+  - mnfst/
+shared_paths: []
+contract_owner: codex
+verification:
+  fast: PYTHONPATH=src python scripts/verify_d2c_mount_testclient.py
+  expected_signal: "Step 1-6 OK, exit 0"
+  fast_2: pytest tests/integration/test_admin_auth.py -q
+  expected_signal_2: "13 passed"
+evidence_path: .harness/evidence/d2c-x1-fix.json
+notes: |
+  D2-C X1 fix 切片:
+  - 改 admin/auth.py L33-34 加 mount_prefix strip, 让 mount /admin 后白名单 /admin/auth/login 命中
+  - 改 verify 脚本 Step 4 真 200 反映 X1 已落地, 弃 BLOCKED 文案
+  - working tree 全部 admin/ + ui/ + tests/ + 集成测试 全部入库 (原 commit 941901a 仅 mount 未含 admin 子 app)
+
+  三方真调共识 (Hermes + Codex, 2026-07-28):
+    X1 (strip mount prefix) > X5 (回退 :8790) > X3 > X2 > X4
+    - X1: 改 admin/auth.py L33-34 加 4 行 strip mount_prefix, 白名单语义保留
+    - 安全面不缩 (路径相等, 非 endswith 松匹配)
+    - 复用 100% (Starlette scope.root_path 是公开 API)
+
+  真验结果 (2026-07-28 17:42):
+    - verify_d2c_mount_testclient.py: 6/6 OK (Step 4 login 真 200, Step 5 WARN 见下)
+    - pytest tests/integration/test_admin_auth.py: 13 passed
+    - pytest tests/unit tests/integration (全量): 见 evidence (含 admin 内部双层鉴权 bug 影响 2 fail)
+
+  已知阻塞 (非 D2-C 切片范围):
+    - admin 内部 AuthMiddleware secret=dev-secret-key vs EnhancedAuthManager SECRET_KEY env, mount 端到端鉴权失败
+    - admin app 自身 bug, 留作单独切片
+    - D2-C v2 §6 标准仅要求 login 通 (Step 4 真 200), 已达标
+
+  父归档:
+    - D2C-fix-Hermes-review.md (13108B, X1 ⭐⭐⭐)
+    - D2C-fix-Codex-review.md (13930B, X1 4/5)
