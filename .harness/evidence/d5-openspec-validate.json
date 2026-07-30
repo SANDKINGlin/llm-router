@@ -1,0 +1,47 @@
+{
+  "task_id": "D5-openspec-validate-2026-07-28",
+  "date": "2026-07-28T18:01:00+08:00",
+  "agent": "codex",
+  "status": "PASS",
+  "verification": {
+    "script_path": "scripts/openspec_validate.py",
+    "workflow_path": ".github/workflows/openspec-validate.yml",
+    "fast_command": ".venv/bin/python scripts/openspec_validate.py --change admin-webui-aaa-combo",
+    "fast_exit_code": 1,
+    "fast_result": "BLOCK (proposal.md 缺 ## 继承自: 段), tasks.md 0 done / 61 undone",
+    "strict_command": ".venv/bin/python scripts/openspec_validate.py --strict",
+    "strict_exit_code": 1,
+    "yaml_valid": true,
+    "scanned_changes": 1
+  },
+  "script_features": {
+    "validates_inherit_section": true,
+    "validates_links_to_obsidian_vault": true,
+    "validates_tasks_md_checkbox_state": true,
+    "validates_specs_dir_not_empty": true,
+    "supports_per_change_scan": true,
+    "supports_strict_mode": true
+  },
+  "exit_code_semantics": {
+    "0": "ALL PASS",
+    "1": "BLOCK (缺继承自段 或 链接无效)",
+    "2": "WARN (--strict 模式才返, spec 文件缺失)"
+  },
+  "ci_integration": {
+    "workflow_file": ".github/workflows/openspec-validate.yml",
+    "triggers": [
+      "pull_request on openspec/changes/** 或 scripts/openspec_validate.py",
+      "push master on openspec/changes/**"
+    ],
+    "runs_in_strict_mode": true,
+    "isolated_venv_install": true
+  },
+  "verdict": "PASS",
+  "notes": [
+    "D5 切片完成 (commit 待)",
+    "scripts/openspec_validate.py: 160 行, 4 项校验",
+    ".github/workflows/openspec-validate.yml: 30 行, 5 步 (checkout + setup-python + install + validate + summary)",
+    "真验 exit 1 = 期望 (master admin-webui-aaa-combo/proposal.md 缺继承自段是已知 B3 阻塞)",
+    "不动 openspec/changes/ 内容 (master uncommitted 用户改动)"
+  ]
+}
