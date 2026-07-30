@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>密钥管理 - LLM Router Admin</title>
+    <script src="/static/js/htmx.min.js"></script>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 导航栏 -->
+        <nav class="navbar">
+            <div class="nav-brand">LLM Router Admin</div>
+            <div class="nav-links">
+                <a href="/admin/" class="nav-link">Dashboard</a>
+                <a href="/admin/keys" class="nav-link">密钥管理</a>
+                <a href="/admin/monitoring" class="nav-link">监控</a>
+                <a href="/admin/settings" class="nav-link">设置</a>
+                <a href="/admin/backup" class="nav-link">备份</a>
+            </div>
+        </nav>
+
+        <!-- 面包屑导航 -->
+        <div class="breadcrumb">
+            <a href="/admin/">← 返回Dashboard</a>
+            <span class="breadcrumb-separator">/</span>
+            <span class="breadcrumb-current">密钥管理</span>
+        </div>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+<div class="keys-container">
+    <h1>密钥管理</h1>
+
+    <!-- 密钥列表 -->
+    <div class="keys-table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Provider</th>
+                    <th>密钥状态</th>
+                    <th>密钥预览</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="keys-list"
+                  hx-get="/api/admin/keys"
+                  hx-trigger="load, every 30s"
+                  hx-swap="innerHTML">
+                <tr>
+                    <td colspan="4" class="loading">加载中...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 新增密钥按钮 -->
+    <button class="btn btn-primary"
+            hx-get="/admin/keys/form"
+            hx-target="#modal-container"
+            hx-swap="innerHTML">
+        + 新增密钥
+    </button>
+
+    <!-- 模态框容器 -->
+    <div id="modal-container"></div>
+    </main>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <p>&copy; 2026 LLM Router Admin. All rights reserved.</p>
+        </footer>
+    </div>
+
+    <script src="/static/js/admin.js"></script>
+</body>
+</html>
+
+<style>
+.keys-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.keys-table-container {
+    margin: 20px 0;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.data-table th {
+    background-color: #f5f5f5;
+    font-weight: 600;
+}
+
+.key-masked {
+    font-family: monospace;
+    color: #666;
+}
+
+.key-status {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.key-status.active {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.key-status.inactive {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+</style>

@@ -1,0 +1,46 @@
+# task-manifest — D2-A 瑕疵修复切片 (2026-07-28)
+# 触发: 2026-07-27 Codex sub-agent D2-A 审查发现 BLOCKED — wt-d2a cp 了 master untracked
+#        tests/unit/routing/test_hop_reason_contract.py, 但没同步 cp master uncommitted
+#        src/llm_router/routing/hop.py 的 HopReasonError 类, 导致 6 个 test ImportError
+# 决议: 2026-07-28 11:14 Hermes 主会话自决 (用户超时未答, 按"授权全权限自救"协议)
+#       解法 = 删 wt-d2a 的 test_hop_reason_contract.py (Codex 推荐解 1, 范围最小)
+#       HopReasonError 修复归 D1 切片 (D1 主任务就是修 8 FAIL, 含此契约变更)
+task_id: D2A-caveat-fix-2026-07-28
+date: 2026-07-28
+owner_agent: codex  # 删 test file 是 codex 主会话在跑
+worktree_path: /home/lin/projects/llm-router-wt-d2a-tasks-sync
+branch: wt/tasks-sync
+parent_commit: 0a5c7f6
+fix_type: post-review-caveat-removal
+
+allowed_paths:
+  - tests/unit/routing/test_hop_reason_contract.py  # 删除此 file
+  - .agent/task-manifest-d2a-caveat-fix.yaml        # 本 manifest
+  - .harness/evidence/d2a-caveat-fix.json           # 验收证据
+
+forbidden_paths:
+  - src/llm_router/                                  # 不动 data 面
+  - openspec/changes/admin-webui-aaa-combo/tasks.md  # 不回滚 D2-A 主任务
+  - src/llm_router/admin/
+  - src/llm_router/ui/
+
+verification:
+  fast: ".venv/bin/python -m pytest tests/unit -q --tb=no"
+  expected_after_fix: "wt-d2a tests/unit 应回归到 8 failed 561 passed (与 master baseline 一致, wt-d2a 不再独有 6 failed)"
+  evidence_path: .harness/evidence/d2a-caveat-fix.json
+
+blocker_resolution:
+  issue: "wt-d2a cp 了 test_hop_reason_contract.py 但未同步 cp master uncommitted HopReasonError 类"
+  selected_fix: "删 test file (D2-A 不该带依赖 uncommitted 段的 test)"
+  why_not_alternative: "越界同步 cp hop.py 进 wt-d2a = D2-A 动 routing/ 不符 task-manifest allowed_paths; D1 切片才负责修 HopReasonError"
+
+references:
+  parent_review: ~/ObsidianVault/20-记忆/共享/research/D2A-codex-review.md (12277 bytes, md5 ebe6f95c...)
+  parent_commit_message: "D2-A: admin-webui OpenSpec tasks.md 同步 + 配套 admin/ui/tests 接入 wt-d2a"
+
+notes: |
+  这是 D2-A 切片的 fixup commit. 完成后 D2-A 三审:
+    - Hermes 主会话 (本 manifest + pytest 真跑) — 主审
+    - CC 真子进程 — 等 CC 命令后派
+    - Codex sub-agent — 等 D3 完成后派, 同模板
+  D2-A fixup 完成后, D1 切片也要重审 (8 FAIL + HopReasonError 一起修), 串行下一个切片.
