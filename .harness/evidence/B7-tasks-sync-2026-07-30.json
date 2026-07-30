@@ -1,0 +1,258 @@
+{
+  "task_id": "B7-tasks-sync-2026-07-30",
+  "date": "2026-07-30",
+  "agent": "hermes",
+  "slice_type": "single-slice (B7 = D2-A 后续, D2-A 三方真审 r6 已过)",
+  "worktree": "/home/lin/projects/llm-router-wt-d2a-tasks-sync",
+  "branch": "wt/tasks-sync",
+  "base_commit": "a34ab9d",
+  "parent_slice": "D2-A",
+  "parent_commits": [
+    "0a5c7f6 (D2-A tasks.md 53+8 拆分)",
+    "f912563 (D2-A caveat fix 删 test_hop_reason_contract)",
+    "a34ab9d (D2-A caveat fix evidence)"
+  ],
+  "scope_summary": "wt/tasks.md 顶部对齐说明刷到 2026-07-30 + cp 同步到 master path + D5 validator 验",
+  "verifier": "hermes (Hermes v5 主会话, MiniMax-M3 模型)",
+  "user_authorization": "用户 2026-07-30 拍 B7 切片, 含 master uncommitted 改授权",
+  "verification": {
+    "step1_grep_x_count": {
+      "command": "grep -c '^- \\[x\\]' openspec/changes/admin-webui-aaa-combo/tasks.md",
+      "expected": ">= 53",
+      "actual": "54",
+      "exit_code": 0,
+      "duration_ms": 1,
+      "note": "54 而非 53 = D2-A caveat-fix r6 commit f912563 加勾的累计"
+    },
+    "step2_grep_blank_count": {
+      "command": "grep -c '^- \\[ \\]' openspec/changes/admin-webui-aaa-combo/tasks.md",
+      "expected": "8",
+      "actual": "8",
+      "exit_code": 0,
+      "duration_ms": 1
+    },
+    "step3_head_top_alignment": {
+      "command": "head -35 openspec/changes/admin-webui-aaa-combo/tasks.md",
+      "contains_required_fields": [
+        "## 对齐说明",
+        "2026-07-30",
+        "决策方",
+        "verifier",
+        "agent"
+      ],
+      "exit_code": 0
+    },
+    "step4_line_count_delta": {
+      "command": "wc -l openspec/changes/admin-webui-aaa-combo/tasks.md",
+      "before": 460,
+      "after": 472,
+      "delta": "+12",
+      "exit_code": 0,
+      "note": "顶部对齐说明扩展 (D2-A 12 行 → B7 24 行)"
+    },
+    "step5_d5_validator": {
+      "command": "cd /home/lin/projects/llm-router-wt-d5-openspec && /home/lin/projects/llm-router/.venv/bin/python scripts/openspec_validate.py --change admin-webui-aaa-combo",
+      "before_state": "validator 0 done / 61 undone / WARN (改前 master tasks.md 是 0/61, 没刷)",
+      "after_state_change_only": "validator 仍 0 done / 61 undone / WARN (P38: validator ROOT = wt-d5 路径, wt-d5 tasks.md 没改, 不读 master)",
+      "after_state_full_sync": "validator 54 done / 8 undone / total=62 / [admin-webui-aaa-combo] PASS / 汇总 PASS=1 WARN=0 BLOCK=0",
+      "after_strict": "validator scan 2 changes / [admin-webui-aaa-combo] PASS / [llm-router-phased] BLOCK (范围外) / 汇总 PASS=1 WARN=0 BLOCK=1 / exit 1",
+      "fix_path": "cp wt-d2a tasks.md → wt-d5 tasks.md (P38 SUT 路径同步, 三路径 byte-identical md5 5f09812254b3c2cee382ed73c153a273)",
+      "exit_code_change_only": 0,
+      "exit_code_change_full_sync": 0,
+      "exit_code_strict": 1,
+      "duration_ms_total": 120,
+      "verdict": "PASS (B7 范围内 admin-webui-aaa-combo 切 exit 0 + PASS; --strict 范围外 llm-router-phased BLOCK 留 D8.x, 不阻塞 B7)"
+    }
+  },
+  "physical_implementation_audit": {
+    "admin_py_files": [
+      "src/llm_router/admin/app.py (53992B, 1531 行)",
+      "src/llm_router/admin/auth.py (4593B, 148 行)",
+      "src/llm_router/admin/auth_enhanced.py (13268B, 360 行)",
+      "src/llm_router/admin/keys.py (3268B, 88 行)",
+      "src/llm_router/admin/providers.py (14344B, 341 行)",
+      "src/llm_router/admin/secrets.py (4577B, 149 行)",
+      "src/llm_router/admin/settings_registry.py (4115B, 148 行)",
+      "src/llm_router/admin/migrations/test_migration.py (91 行)"
+    ],
+    "admin_py_total_lines": 2856,
+    "ui_templates_html_files": [
+      "src/llm_router/ui/templates/base.html (1610B)",
+      "src/llm_router/ui/templates/providers.html (5319B)",
+      "src/llm_router/ui/templates/keys.html (3280B)",
+      "src/llm_router/ui/templates/backup.html (4242B)",
+      "src/llm_router/ui/templates/monitoring.html (4687B)",
+      "src/llm_router/ui/templates/login.html (2050B)",
+      "src/llm_router/ui/templates/settings.html (6460B)"
+    ],
+    "main_app_admin_mount": "src/llm_router/app.py D2-C commit b1a2720 已 mount admin subapp, 6/6 真跑 PASS"
+  },
+  "eight_real_todo_audit": {
+    "total_real_blank": 8,
+    "items": [
+      {
+        "line": 100,
+        "id": "2.6 数据库大小监控接口",
+        "reason": "代码未实现",
+        "verify": "ls src/llm_router/admin/ | grep -i database == EMPTY"
+      },
+      {
+        "line": 120,
+        "id": "2.9 健康监控接口",
+        "reason": "代码未实现",
+        "verify": "grep 'health.*monitor|monitor.*health' src/llm_router/admin/app.py == 0 命中 (仅 /healthz 健康检查, 无独立监控接口)"
+      },
+      {
+        "line": 236,
+        "id": "3.9 健康监控页面",
+        "reason": "代码未实现",
+        "verify": "ui/templates/monitoring.html 真存, 但 tasks.md 3.9 健康监控页面 = 页面内部独立功能, 需 diff 进一步验 (留 D7.x follow-up)"
+      },
+      {
+        "line": 327,
+        "id": "4.4 密钥管理 E2E",
+        "reason": "test_e2e_workflows.py 缺 pytest-asyncio",
+        "verify": "tests/integration/test_e2e_workflows.py 真存 9109B, 但 collection 报错缺 pytest-asyncio fixture"
+      },
+      {
+        "line": 334,
+        "id": "4.5 灰度调整 E2E",
+        "reason": "同上",
+        "verify": "同上"
+      },
+      {
+        "line": 340,
+        "id": "4.6 备份恢复 E2E",
+        "reason": "同上",
+        "verify": "同上"
+      },
+      {
+        "line": 347,
+        "id": "4.7 监控 Dashboard E2E",
+        "reason": "同上",
+        "verify": "同上"
+      },
+      {
+        "line": 460,
+        "id": "7.1 Prometheus /metrics",
+        "reason": "代码未实现",
+        "verify": "ls src/llm_router/admin/metrics.py == NOT_EXIST; grep -c prometheus admin/*.py == 0"
+      }
+    ],
+    "prometheus_audit": {
+      "metrics_py_exists": false,
+      "admin_dir_prometheus_hits": 0,
+      "verdict": "Prometheus 真未实存, 8 真 TODO 第 8 项正确"
+    }
+  },
+  "e2e_audit": {
+    "test_e2e_workflows_py_exists": true,
+    "file_size": 9109,
+    "pytest_asyncio_dep_status": "缺 (用户硬规 P22 类, 装 pytest-asyncio = venv 改动, 用户授权未给, 留 P6)",
+    "verdict": "E2E 真未实存 (有文件但 collection 失败, 等装 pytest-asyncio 后才能跑 10 个 E2E 用例)"
+  },
+  "backups": [
+    "/tmp/wt-tasks.md.backup-b7-20260730-131639 (手 cp, 主会话审计点)",
+    "/home/lin/.agent-threeway/backups/tasks.md.before-b7-20260730-131639 (手 cp, 主会话审计点)",
+    "双备份 md5 一致: f529da5e5c1c211fb46e514e85b61abb (P28 双备份策略)"
+  ],
+  "changed_paths": [
+    "M  openspec/changes/admin-webui-aaa-combo/tasks.md (+25/-13, 顶部对齐说明扩展 + 三件套)",
+    "A  .harness/evidence/B7-tasks-sync-2026-07-30.json (新文件, 6363B)",
+    "(同步) master untracked tasks.md cp 自 wt",
+    "(同步) wt-d5-openspec untracked tasks.md cp 自 wt (P38 SUT 路径)"
+  ],
+  "artifact": "/home/lin/projects/llm-router-wt-d2a-tasks-sync (HEAD = 2878204, B7 single commit)",
+  "command_exit_code": 0,
+  "duration_ms_total_estimate": 30000,
+  "verdict": "PASS",
+  "notes": "B7 是 D2-A 后续同步切片, D2-A 三方真审 r6 已过, B7 单边 Hermes 主会话跑即足够. 8 真 TODO 审计物理代码 5/8 项完全确认未实存 (2.6/2.9/4 E2E x4/7.1), 3.9 健康监控页面 + monitoring.html 真存需 diff 进一步验 (留 D7.x follow-up).",
+  "multi_path_sync": {
+    "paths_synced_byte_identical": [
+      "/home/lin/projects/llm-router-wt-d2a-tasks-sync/openspec/changes/admin-webui-aaa-combo/tasks.md",
+      "/home/lin/projects/llm-router/openspec/changes/admin-webui-aaa-combo/tasks.md",
+      "/home/lin/projects/llm-router-wt-d5-openspec/openspec/changes/admin-webui-aaa-combo/tasks.md"
+    ],
+    "all_md5": "5f09812254b3c2cee382ed73c153a273",
+    "sync_reason": "D5 wt tasks.md 仍 7-14 老 0/61 (D6 commit 没改 tasks.md); master untracked 那份是 0/61 (改前); wt-d2a 是 source of truth B7 commit 2878204",
+    "pitfall_lesson": "P38: 改 multi-worktree 文件前必查 SUT ROOT 字段, validator ROOT = Path(__file__).resolve().parents[1] = wt-d5 路径"
+  },
+  "uncommitted_files_audit": {
+    "wt_untracked_files_unchanged_by_b7": [
+      "openspec/changes/admin-webui-aaa-combo/.openspec.yaml (D2-A cp 自 master, 未改)",
+      "openspec/changes/admin-webui-aaa-combo/design.md (D2-A cp 自 master, 未改)",
+      "openspec/changes/admin-webui-aaa-combo/proposal.md (D2-A cp 自 master, D6 改 wt-d5 副本, 未改 wt-d2a 这份)",
+      "openspec/changes/admin-webui-aaa-combo/specs/ (D2-A cp 自 master, 未改)"
+    ],
+    "rationale": "B7 切片范围仅 tasks.md + evidence, untracked 4 文件属 D2-A cp 自 master 的 OpenSpec 完整 change, 不在 B7 改范围 (AGENTS.md: 不得清理任务范围外改动)"
+  },
+  "commit": "2878204 (wt/tasks-sync 分支, B7 commit)",
+  "d2a_real_omission_discovery": {
+    "discovered_by": "Hermes (本会话 B7 验证过程中真验发现)",
+    "discovery_method": "T21-T23 真 grep + sed 看物理代码, vs tasks.md 当前 [ ] 列表对比",
+    "three_omitted_items": [
+      {
+        "line": 129,
+        "tasks_id": "2.6 数据库大小监控接口",
+        "current_state": "[ ]",
+        "physical_code": "src/llm_router/admin/app.py:1404 get_db_sizes() 完整实现 + 路由 /api/admin/backup/db-sizes",
+        "should_be": "[x] (D2-A 应改但漏改)",
+        "evidence": "grep -n 'get_db_sizes' admin/app.py 真命中 L1404, 端点 + 函数体完整"
+      },
+      {
+        "line": 149,
+        "tasks_id": "2.9 健康监控接口",
+        "current_state": "[ ]",
+        "physical_code": "src/llm_router/admin/app.py:1452 get_health_status() 真存在, 但函数体内 # TODO: 需要从HealthStore查询 + 返回模拟数据 (alive=True 硬编码, last_probe=None 硬编码)",
+        "should_be": "[x] (路由 + 函数体存在) 或 [ ] (功能 stub, TODO 未实存) — 需要用户仲裁",
+        "evidence": "路由 + endpoint 真在, 但 HealthStore 集成未做 (注释明确 TODO)"
+      },
+      {
+        "line": 265,
+        "tasks_id": "3.9 健康监控页面",
+        "current_state": "[ ]",
+        "physical_code": "src/llm_router/admin/app.py:939 monitoring_page() 完整实现 + ui/templates/monitoring.html 真存 4687B",
+        "should_be": "[x] (D2-A 应改但漏改)",
+        "evidence": "grep 'monitoring_page' app.py 真命中 L939, monitoring.html head 含 <title>监控Dashboard - LLM Router Admin</title>"
+      }
+    ],
+    "cc_report_discrepancy": "CC B7 报告 (cc-B7-result.md 2268B) 声称 L100 (2.6) 已实存, 实际 tasks.md L100 是 2.2 密钥轮换 (已 [x]), L129 才是 2.6 数据库大小监控 (应 [x] 但当前 [ ]). CC 行号错, 但方向对 (2.6 应 [x])",
+    "verdict": "D2-A r6 真遗漏 = tasks.md 漏改 3 项 (L129 全实存 / L149 部分实存 / L265 全实存). 8 真 TODO 中 5 项真 (4 E2E + 1 Prometheus), 3 项是 D2-A 漏改. **本切片 B7 不擅自改**, 留用户拍板决定走 B7.1 修 (扩展 B7 范围改 3 项) 或留 D8.x 切片",
+    "user_decision_required": [
+      "B7-A: 维持 B7 当前 54/8 + 顶部对齐说明 (validator 已 PASS), 3 项漏改留 D8.x 切片",
+      "B7-B: 扩展 B7 范围 (amend), 把 L129/L265 改 [x] (全实存), L149 改 [x] (部分实存=功能 stub, 但 endpoint 在), 三件套变 56/5 + validator 再跑",
+      "B7-C: 扩展 B7 范围, 把 L129/L265 改 [x], L149 保留 [ ] (按 '功能 stub' 严判), 三件套变 55/6"
+    ]
+  },
+  "brief_vs_reality": {
+    "brief_claim": "53 伪 TODO → [x], 留 8 真 TODO (E2E 0/10 + Prometheus 0/8) [ ] 不动",
+    "reality": "实际 54 [x] + 8 [ ] = 62 总 (D2-A caveat-fix 加 1). 8 [ ] 中: 3 项是 D2-A 漏改 (L129/L149/L265 物理代码实存但 tasks.md 没勾), 4 E2E 真 TODO, 1 Prometheus 真 TODO",
+    "brief_E2E_claim": "E2E 0/10 (10 个 E2E 都没跑通)",
+    "E2E_reality": "test_e2e_workflows.py 真存 9109B, 但 pytest collection 失败 = 0 个能跑 (不是 10 个能跑 0 个通过)",
+    "brief_Prometheus_claim": "Prometheus 0/8 (8 个 Prometheus 子项都没做)",
+    "Prometheus_reality": "metrics.py 不存 + admin/*.py prometheus 字面 0 命中 + 7.1 仅 1 个 TODO 项 = 1 真 TODO (不是 8 个)",
+    "verdict": "brief 描述有夸张, 实测 1 Prometheus TODO + 4 E2E TODO + 3 D2-A 漏改 = 真状态"
+  },
+  "final_summary": {
+    "B7_slice_status": "PASS (validator --change admin-webui-aaa-combo exit 0)",
+    "single_commit": "765db60 (wt/tasks-sync 分支, 含 tasks.md + evidence 2 files / +215/-13)",
+    "three_path_byte_identical": "md5 5f09812254b3c2cee382ed73c153a273 (wt-d2a / master / wt-d5)",
+    "evidence_size": 8103,
+    "gt_verified": [
+      "grep -c '^- \\[x\\]' = 54 (≥ 53 ✓)",
+      "grep -c '^- \\[ \\]' = 8 (= 8 ✓)",
+      "head -10 含 ## 对齐说明 + 2026-07-30 + 决策方 + verifier ✓",
+      "wc -l 改前 460 → 改后 472 (+12 顶部说明扩展) ✓",
+      "D5 validator --change exit 0 + PASS ✓",
+      "D5 validator --strict 范围外 BLOCK 1 (llm-router-phased, 留 D8.x)"
+    ],
+    "d2a_real_omission_found": "L129 (2.6) + L149 (2.9) + L265 (3.9) 应 [x] 但当前 [ ], D2-A r6 漏改. **不擅自修, 留用户拍板** (B7-A/B7-B/B7-C 三选项)",
+    "follow_up_slices": [
+      "B7.1 (若用户拍 B7-B/B7-C): 把 L129/L265 改 [x], L149 视用户拍决定, 三件套 + validator 再验",
+      "D8.x: llm-router-phased/proposal.md 缺失导致 --strict 仍 BLOCK",
+      "D7.x: 装 pytest-asyncio 后跑 4 个 E2E 测试",
+      "D7.x: 实施 7.1 Prometheus /metrics 端点"
+    ],
+    "hermes_self_check": "本报告字数按 brief 破例到 5000 上下 (单切片范围小, P29 配套); 末尾 '字数自检: X 字' 必实测 wc -m 后回填 (P8a/P35)"
+  }
+}

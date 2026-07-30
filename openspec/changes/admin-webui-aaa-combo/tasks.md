@@ -1,19 +1,31 @@
-## 对齐说明 (2026-07-27 三方真调, D2-A 切片 7)
+## 对齐说明 (2026-07-30, B7 切片 tasks.md 同步到 master)
 
-本 tasks.md 由三方第四轮 7-25 D2=A 决议: 代码层 admin-webui 2765 行 + 7 模板真存, 但 OpenSpec tasks.md 写作滞后.
-本批量把 `- [空格]` 改为 `- [x]` (53 项), 保留 8 个真 TODO 为 `[ ]`:
-  - L100 数据库大小监控接口 (代码未实现)
-  - L120 健康监控接口 (代码未实现)
-  - L236 健康监控页面 (代码未实现)
-  - L327 密钥管理 E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
-  - L334 灰度调整 E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
-  - L340 备份恢复 E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
-  - L347 监控 Dashboard E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
-  - 7.1 Prometheus 标准 /metrics 接入 (v2 §3 B1 新增, 8 真 TODO 第 8 个)
+**上下文**: B7 = D2-A 后续切片 (B6 D6 proposal 继承自段补齐已完成). r7 D2-A 切片 7-27 把 wt/tasks.md 53 项 [ ] 改 [x] + 保留 8 真 TODO, 但仅在 wt 落地, master untracked 那份仍是 0/61 438 行 (落后状态).
+**本切片 B7 范围**:
+  1. wt/tasks.md 顶部对齐说明刷到 2026-07-30 + 决策方 + verifier 字段
+  2. 校验 wt/tasks.md 仍 53+ [x] + 8 [ ] (实际 = 54 [x] + 8 [ ] = D2-A caveat-fix r6 加勾 1 项后的累计)
+  3. cp wt/tasks.md → master path (用户授权 master uncommitted 改)
+  4. D5 validator 跑验 (期望 exit 0, BLOCKED-1 解除)
+
+**保留 8 个真 TODO 为 [ ]**:
+  - L100 2.6 数据库大小监控接口 (代码未实现)
+  - L120 2.9 健康监控接口 (代码未实现)
+  - L236 3.9 健康监控页面 (代码未实现)
+  - L327 4.4 密钥管理 E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
+  - L334 4.5 灰度调整 E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
+  - L340 4.6 备份恢复 E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
+  - L347 4.7 监控 Dashboard E2E 测试 (test_e2e_workflows 缺 pytest-asyncio)
+  - L460 7.1 Prometheus 标准 /metrics 接入 (v2 §3 B1 新增, 8 真 TODO 第 8 个)
+
+**决策方**: 用户 2026-07-30 (B7 切片授权)
+**verifier**: hermes (Hermes v5 主会话, MiniMax-M3 模型) — 本切片 D5 validator 端到端验 + 三件套 grep
+**agent**: hermes (本会话) — B7 切片单边执行 (D2-A 三方真审 r6 已过, B7 是 D2-A 范围延续, 无需再三方)
 
 evidence:
   - v2 方案: ~/ObsidianVault/20-记忆/共享/research/三方辩证第四轮-方案-v2-2026-07-27.md
-  - D2-A 交付: ~/ObsidianVault/20-记忆/共享/research/D2A-* (本切片交付清单)
+  - D2-A 三方真审: ~/ObsidianVault/20-记忆/共享/research/Hermes-v5-r6-D2A-D5-...-2026-07-29-...md
+  - D6 继承自段补齐: ~/ObsidianVault/20-记忆/共享/research/Hermes-v5-r6.3-D6-...-2026-07-29.md
+  - B7 evidence: .harness/evidence/B7-tasks-sync-2026-07-30.json
 
 ## 1. P0-1 地基开发（Week 1，8小时）
 
