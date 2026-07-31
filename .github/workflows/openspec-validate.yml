@@ -4,11 +4,21 @@ on:
   pull_request:
     paths:
       - "openspec/changes/**"
+      - "src/**"
+      - "tests/**"
       - "scripts/openspec_validate.py"
+      - ".harness/**"
+      - ".github/workflows/openspec-validate.yml"
   push:
     branches: [master]
     paths:
       - "openspec/changes/**"
+      - "src/**"
+      - "tests/**"
+      - "scripts/openspec_validate.py"
+      - ".harness/**"
+      - ".github/workflows/openspec-validate.yml"
+  workflow_dispatch:
 
 jobs:
   validate:
