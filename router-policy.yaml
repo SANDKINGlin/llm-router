@@ -11,8 +11,16 @@ providers:
     cooldown_s: 30         # 单 key cooldown 上限(秒,S1.6 熔断用)
     is_free: true          # S2.1a:路由排序键数据(mock 免费)
     cost_multiplier: 0.0   # S2.1a:倍率(mock 零成本);真 provider 填实际倍率
+    ip_safety_rank: safe   # r9.3: IP 安全等级 (safe < risky < forbidden)
     # base_url / api_key_env:Phase1 mock 留空;S2.x 接真 provider 时填
 tiers:
   strong: []
   medium: []
   fast: [mock]
+# r9.3 排序键配置 (5 维字典序:免费供应商 > 额度 > 对口模型 > 最强免费)
+sort_keys:
+  - ip_safety_rank   # 越小越优先 (safe=0 < risky=1 < forbidden=2)
+  - is_free          # true(0) < false(1), 免费优先
+  - quota_remaining  # 越大越优先 (desc)
+  - capability_match # match(0) < mismatch(1), 能力匹配优先
+  - model_strength   # 越大越优先 (desc), 同能力下选最强

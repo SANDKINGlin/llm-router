@@ -1,0 +1,39 @@
+task_id: D5-openspec-validate-2026-07-28
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d5-openspec
+branch: wt/openspec-validate
+allowed_paths:
+  - scripts/openspec_validate.py
+  - .github/workflows/openspec-validate.yml
+  - .agent/task-manifest-d5-openspec.yaml
+  - .harness/evidence/d5-openspec-validate.json
+forbidden_paths:
+  - openspec/changes/**       # master uncommitted 用户改动, 不动
+  - mnfst/providers.yaml
+  - router-policy.yaml
+  - src/**
+shared_paths: []
+contract_owner: codex
+verification:
+  fast: .venv/bin/python scripts/openspec_validate.py --change admin-webui-aaa-combo
+  expected_signal: "BLOCK (proposal.md 缺 ## 继承自: 段, exit 1)"
+  fast_2: .venv/bin/python scripts/openspec_validate.py --strict
+  expected_signal_2: "exit 1 (BLOCK)"
+expected_signal_3_yaml: ".github/workflows/openspec-validate.yml 存在 + 语法有效"
+evidence_path: .harness/evidence/d5-openspec-validate.json
+notes: |
+  D5 切片: OpenSpec validate + inherit-link check 接 CI
+  - B3 解法核心 (2026-07-25 三方共识)
+  - scripts/openspec_validate.py: 校验 proposal.md 含 ## 继承自: 段, links 指 ObsidianVault, tasks.md checkbox 汇总, specs/ 不空
+  - .github/workflows/openspec-validate.yml: PR + push master 触发, --strict 模式
+  - 不动 openspec/changes/ 内容 (master uncommitted 用户改动, 留给后续切片)
+
+  真验结果 (2026-07-28 18:01):
+    - .venv/bin/python scripts/openspec_validate.py --change admin-webui-aaa-combo: BLOCK (proposal.md 缺 ## 继承自:), exit 1
+    - tasks.md 状态: 0 done / 61 undone (D2-A 切片在 wt-d2a 已修到 8 undone, master 没合)
+    - specs/: 5 spec.md files (config-reload, admin-dashboard, backup-restore, admin-auth, key-management)
+
+  退出码语义:
+    0 = ALL PASS
+    1 = BLOCK (有继承自段缺失 或 链接无效)
+    2 = WARN (有 spec 文件缺失, --strict 模式才返)

@@ -1,0 +1,25 @@
+{
+  "task_id": "D1-failfix-2026-07-27",
+  "worktree": "/home/lin/projects/llm-router-wt-d1-failfix",
+  "branch": "wt/failfix-8-fail",
+  "date": "2026-07-27",
+  "agent": "codex",
+  "root_cause": "master app.py:301 uncommitted calls run_cold_migrator_loop(..., interval=86400.0, ...) — but trace.py:600 sig is *, interval_seconds: float (kw-only)",
+  "fix_description": "wt-d1-failfix base = master 08ebbb8 (no uncommitted) → wt app.py lacks the run_cold_migrator_loop call entirely. fast profile on wt = 0 failed. D1 sign-off: 8 FAIL are master uncommitted residue, NOT a new bug. Resolution = scope-clean, no wt code changed.",
+  "verifier": "Hermes",
+  "verification_command": "../llm-router/.venv/bin/python -m pytest tests/unit -q",
+  "expected_signal": "0 failed, 557 passed, 3 skipped",
+  "actual_signal": "557 passed, 3 skipped, 1 warning in 9.35s",
+  "exit_code": 0,
+  "duration_ms": 10860,
+  "changed_paths": [
+    ".agent/task-manifest-d1-failfix.yaml (new)",
+    ".harness/evidence/d1-failfix.json (new)"
+  ],
+  "artifact": {
+    "manifest": ".agent/task-manifest-d1-failfix.yaml",
+    "evidence_path": ".harness/evidence/d1-failfix.json"
+  },
+  "next_step": "D4 (cryptography>=42 + pyjwt>=2.8 install)",
+  "notes": "D1 切片的 repo-level shared fixture 待 .agent/task-manifest.yaml 批准后, 把 admin 模块拉进 mount 范围."
+}

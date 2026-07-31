@@ -27,6 +27,7 @@ from ..resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReaso
 from ..resilience.content_integrity import is_complete
 from ..store.health_store import HealthStore
 from ..store.token_ledger import LedgerStore
+from ..store.usage import UsageStore
 from ..routing.hop import (
     DEFAULT_RETRY_BUDGET,
     advance,
@@ -72,6 +73,7 @@ class Cascade:
         policy_enforcer: Optional[PolicyEnforcer] = None,
         ledger: Optional[LedgerStore] = None,
         cost_gate: Optional[CostGate] = None,
+        usage_store: Optional[UsageStore] = None,
         budget: int = DEFAULT_RETRY_BUDGET,
     ) -> None:
         self._store = store
@@ -87,6 +89,7 @@ class Cascade:
         self._policy_enforcer = policy_enforcer  # S2.7:可选,合规门(layer ①,最先)
         self._ledger = ledger  # S2.4:可选,token 用量记账(writer);与 cost_gate 共享实例
         self._cost_gate = cost_gate  # S2.4:可选,路由前剔超 token 预算的候选(降级)
+        self._usage_store = usage_store  # r9.5:可选,tpm/rpm/quota 跟踪
         self._store_ready = False
         self._init_lock = asyncio.Lock()
         # S4.3:回滚状态同步。当前 policy_version(由 /admin/rollback 端点设);
@@ -145,6 +148,7 @@ class Cascade:
 
         - S2.8c health:hard-skip health.db 中 alive=False 的 key(从未探活保留=无信号不过滤)。
         - S2.4 cost:剔超 token 预算的 provider(降级到剩余免费/mock 兜底)。
+        - r9.5 usage:quota=0 的 provider 跳过(fail-open,usage_store 未挂才过滤)。
 
         两过滤均先于 strategy.plan() 字典序排序(只幸存者进排序池)。任一查询失败 → fail-open
         返全候选(health/cost 都是非权威软信号,读不到不该崩请求)。
@@ -168,6 +172,20 @@ class Cascade:
         # S2.4 cost gate:超预算剔出(fail-open,见 CostGate.survivors)。
         if self._cost_gate is not None:
             survivors = await self._cost_gate.survivors(survivors)
+        # r9.5 usage gate:quota=0 剔出(fail-open,未挂才过滤)。
+        if self._usage_store is not None:
+            try:
+                quota_survivors = []
+                for name in survivors:
+                    quota = self._usage_store.check_quota_remaining(name)
+                    if quota > 0:
+                        quota_survivors.append(name)
+                survivors = quota_survivors if quota_survivors else survivors
+            except Exception:
+                _LOG.warning(
+                    "usage_store quota 检查失败 → fail-open 不过滤(非权威信号,不崩请求)",
+                    exc_info=True,
+                )
         return survivors
 
     def feed_probe_success(self, name: str) -> None:
@@ -279,6 +297,24 @@ class Cascade:
                 pol.policy_version,
             )
         chain = self._strategy.plan(survivors, context)
+        # r9.5:按 5 维排序重新确定 provider 优先级
+        if self._usage_store is not None and chain:
+            try:
+                # 从 context 提取 capability/ip_safety(灰度或后续功能会传)
+                capability = context.get("capability")
+                ip_safety = context.get("ip_safety")
+                top_provider = self._usage_store.get_top_provider(
+                    chain, capability=capability, ip_safety=ip_safety
+                )
+                if top_provider and top_provider in chain:
+                    # 把 top_provider 移到链首
+                    chain.remove(top_provider)
+                    chain.insert(0, top_provider)
+            except Exception:
+                _LOG.warning(
+                    "usage_store get_top_provider 失败 → 按原 plan 顺序(非权威信号,不崩请求)",
+                    exc_info=True,
+                )
 
         parent_trace_id: Optional[str] = None
         prev_provider: Optional[str] = None
@@ -305,11 +341,20 @@ class Cascade:
                 )
 
             # ② 本跳归因(首跳 initial;之后 reason=上一跳失败原因,from=上一 provider)。
-            attr = (
-                initial_attribution(name)
-                if idx == 0
-                else advance(idx - 1, last_reason, prev_provider, name)
-            )
+            # 映射:rate_limited/provider_removed_during_rollback → hard_failure(归 hard_failure 类,计入失败)。
+            try:
+                if last_reason in ("rate_limited", "provider_removed_during_rollback"):
+                    mapped_reason = "hard_failure"
+                else:
+                    mapped_reason = last_reason
+                attr = (
+                    initial_attribution(name)
+                    if idx == 0
+                    else advance(idx - 1, mapped_reason, prev_provider, name)
+                )
+            except AssertionError:
+                # 契约破裂:未知 reason → 返失败 result,不抛(避免 ASGI 500)
+                return CascadeResult(None, None, False, attempted, "hop_reason_error")
 
             # ③ acquire trace 行(parent 指上一跳,串 fallback 链)。
             out = await self._store.acquire(
@@ -391,6 +436,21 @@ class Cascade:
 
             # ⑥.5 S2.4:token 用量记账(best-effort)。token 已消耗,先于完整性判定记。
             await self._record_usage(name, model, usage)
+            # r9.5:usage_store 记录请求(best-effort,不影响路由结果)
+            if self._usage_store is not None:
+                try:
+                    tokens_used = usage.total_tokens if usage else 0
+                    self._usage_store.record_request(
+                        provider=name,
+                        tokens_used=tokens_used,
+                        capability=context.get("capability"),
+                        request_id=correlation_id,
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "usage_store record_request 失败 → 跳过(软约束,不崩请求)",
+                        exc_info=True,
+                    )
 
             # ⑦ 内容完整性:残缺 → 软失败(3 软 = 1 硬)。
             #   chat-protocol-passthrough:tool_calls 非空 = 纯工具调用(content 可能空)= 完整成功,

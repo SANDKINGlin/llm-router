@@ -1,0 +1,55 @@
+task_id: D2A-tasks-sync-2026-07-27
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-d2a-tasks-sync
+branch: wt/tasks-sync
+allowed_paths:
+  - openspec/changes/admin-webui-aaa-combo/
+  - src/llm_router/admin/
+  - src/llm_router/ui/
+  - tests/__init__.py
+  - tests/unit/__init__.py
+  - tests/integration/__init__.py
+  - tests/unit/routing/test_hop_reason_contract.py
+  - tests/unit/test_cascade_concurrency.py
+  - tests/integration/test_admin_auth.py
+  - tests/integration/test_e2e_workflows.py
+  - tests/integration/test_config_reload.py
+  - AGENTS.md
+  - ADMIN_WEBUI_VALIDATION_REPORT.md
+  - verify_admin_webui.py
+  - scripts/audit_secrets.py
+  - scripts/gen_pdf_doc.py
+forbidden_paths:
+  - mnfst/providers.yaml
+  - router-policy.yaml
+  - src/llm_router/api/cascade.py
+  - src/llm_router/store/trace.py
+shared_paths: []
+contract_owner: codex
+verification:
+  fast: grep -c "^- \[ \]" openspec/changes/admin-webui-aaa-combo/tasks.md
+  expected_signal: "8"
+  alternative: |
+    additional check: tests/unit still runs,
+    no test_admin_auth regression (8 tests passed from D4)
+evidence_path: .harness/evidence/d2a-tasks-sync.json
+notes: |
+  D2-A: 改 openspec/changes/admin-webui-aaa-combo/tasks.md,
+  从 0/61 改到 53 [x] + 8 [ ], 留 8 真 TODO.
+
+  wt-d2a 因 master 端 admin-webui-aaa-combo/ 是 untracked,
+  本切片 cp -r master admin-webui-aaa-combo/ 进 wt-d2a + git add.
+  同时 cp master untracked admin/ui/tests 关键文件进 wt-d2a
+  (避免下一切片 D2-C mount :8789/admin/* 拿不到 admin 代码).
+
+  真 TODO 8 个保留 [ ]:
+    1. L100 数据库大小监控接口
+    2. L120 健康监控接口
+    3. L236 健康监控页面
+    4. L327 密钥管理 E2E 测试 (test_e2e_workflows pytest-asyncio 缺)
+    5. L334 灰度调整 E2E 测试
+    6. L340 备份恢复 E2E 测试
+    7. L347 监控 Dashboard E2E 测试
+    8. 7.1 Prometheus 标准 /metrics 接入 (v2 §3 B1 新增)
+
+ next_step: D2-C mount :8789/admin/* + D3 OmniRoute 引 + D7 lockfile 并行

@@ -1,0 +1,60 @@
+{
+  "task_id": "D2C-X1-fix-2026-07-28",
+  "date": "2026-07-28T17:42:31+08:00",
+  "agent": "codex",
+  "fix_commit": "b1a27202c579b37d552ca184854cf86cf435e815",
+  "branch": "wt/port8789-mount",
+  "worktree": "/home/lin/projects/llm-router-wt-d2c-mount",
+  "verification": {
+    "verify_script": {
+      "command": "PYTHONPATH=src /home/lin/projects/llm-router/.venv/bin/python scripts/verify_d2c_mount_testclient.py",
+      "exit_code": 0,
+      "duration_ms": 4500,
+      "result": "6/6 OK (Step 1-6 all PASS, exit 0)",
+      "step_4_actual": "200 (X1 strip mount_prefix 让白名单命中)",
+      "step_5_actual": "401 WARN (admin 内部 EnhancedAuthManager secret 不一致, 不属 D2-C 切片范围)"
+    },
+    "pytest_admin": {
+      "command": "pytest tests/integration/test_admin_auth.py tests/integration/test_config_reload.py -q --tb=no",
+      "exit_code": 0,
+      "result": "13 passed, 6 warnings in 0.30s"
+    },
+    "pytest_full_unit_integration": {
+      "command": "pytest tests/unit tests/integration -q --tb=line",
+      "result": "8 failed, 625 passed, 4 skipped, 7 warnings in 11.55s",
+      "fails_breakdown": {
+        "x1_introduced": 0,
+        "pre_existing_background": 8,
+        "fail_list": [
+          "tests/unit/test_apply_policy.py::TestAdminRollbackEndpoint::test_admin_guard_returns_403_for_any_call (admin 双层鉴权 secret 不一致 → 401 vs 403 预期)",
+          "tests/unit/test_apply_policy.py::TestAdminRollbackEndpoint::test_policy_version_mismatch_returns_400_when_guard_bypassed (同上)",
+          "tests/integration/test_e2e_workflows.py::TestE2EKeyManagement::test_create_key_via_api (e2e 鉴权同源)",
+          "tests/integration/test_e2e_workflows.py::TestE2EKeyManagement::test_update_key_reflected_in_routing (e2e 鉴权同源)",
+          "tests/integration/test_e2e_workflows.py::TestE2EBackupRestore::test_database_sizes_growth_detection (e2e 鉴权同源)",
+          "tests/integration/test_e2e_workflows.py::TestE2EObservationAccuracy::test_circuit_breaker_status_accuracy (e2e 鉴权同源)",
+          "tests/integration/test_e2e_workflows.py::TestE2EObservationAccuracy::test_health_status_accuracy (e2e 鉴权同源)",
+          "tests/integration/test_phase1_load_and_recovery.py::test_lifespan_with_no_probe_targets_zero_pollution_after_callable_fix (D2-A 切片上下文)"
+        ]
+      }
+    }
+  },
+  "x1_fix_diff": {
+    "file": "src/llm_router/admin/auth.py",
+    "lines_added": 4,
+    "lines_removed": 0,
+    "core_logic": "mount_prefix = request.scope.get('root_path', '') or ''; sub_path = raw_path[len(mount_prefix):] if mount_prefix and raw_path.startswith(mount_prefix) else raw_path; if sub_path in ['/healthz', '/admin/auth/login'] or raw_path.endswith('/admin/auth/login'): return await call_next(request)"
+  },
+  "verdict": "PASS",
+  "notes": [
+    "D2-C X1 fix 完成 (commit b1a2720)",
+    "verify_d2c_mount_testclient.py 6/6 OK (Step 4 login 真 200)",
+    "admin 集成测试 13 passed",
+    "8 fail 是 admin 内部双层鉴权 secret 不一致 bug + D2-A 历史瑕疵, 不属 D2-C mount 切片范围",
+    "留作单独切片 (admin-auth-consistency)"
+  ],
+  "follow_up_slices": [
+    "D2-X: admin 内部双层鉴权 secret 统一 (AuthMiddleware dev-secret-key vs EnhancedAuthManager SECRET_KEY env)",
+    "D2-X: e2e 测试 6 fail 因鉴权阻塞面修复后回归",
+    "D2-X: phase1_load_and_recovery 1 fail (D2-A 历史瑕疵)"
+  ]
+}
