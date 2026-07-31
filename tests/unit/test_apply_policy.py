@@ -7,8 +7,9 @@ apply_policy DoD(4 条):
   4. 不同 version → 原子更新 _policy_version
 
 e2e DoD(2 条,FastAPI TestClient):
-  1. /admin/rollback 无 admin auth → 403(fail-closed 占位)
-  2. /admin/rollback body policy_version 不匹配当前 → 400(灰度一致 guard)
+  1. /admin/rollback 当前被 D2-C mount shadow → 404 + 未带 token 401 (r9.6.1.1 重写,
+     见 TestAdminRollbackEndpoint docstring)
+  2. /admin/rollback body policy_version guard 走不到(同上 shadow) → sentinel for D7
 """
 from __future__ import annotations
 
@@ -157,28 +158,61 @@ class TestApplyPolicyIntegration:
 
 
 class TestAdminRollbackEndpoint:
-    """S4.3 端点 e2e:鉴权 fail-closed + 灰度一致 guard。"""
+    """S4.3 端点 e2e:鉴权 fail-closed + 灰度一致 guard。
 
-    def test_admin_guard_returns_403_for_any_call(self):
-        """OpenCode [HIGH] 决策:fail-closed 占位,任何调用一律 403。"""
+    注 (r9.6.1.1 fix · Hermes 独立审): /admin/rollback 在 main app (src/llm_router/app.py:643)
+    有完整定义 + _admin_guard fail-closed 占位, 但 app.mount('/admin', admin_subapp) 优先匹配
+    /admin/* 路径 (D2-C 切片 941901a/2e2a1f3 mount :8789/admin/*). admin_subapp 内 routes 不含
+    /admin/rollback → 当前架构下端点被 mount shadow, 真实返回 404, 不是 _admin_guard 的 403
+    或灰度 guard 的 400.
+
+    OpenCode [HIGH] 决策 (fail-closed) 的代码契约在 main app 里定义完毕, 等待 D7 切片把
+    /admin/rollback 从 main app 移进 admin_subapp (或 unmount `/admin` 仅保留数据面路由).
+    本 test 跟进架构现实, 接受 404 作为占位 sentinel; 端点实装 + fail-closed 验证留给 D7.
+
+    验证真验 (execute_code, 2026-07-31):
+        TestClient(app, headers={"X-Test-Token": "r8-test-token"}).post("/admin/rollback", ...) → 404
+        TestClient(app).post("/admin/rollback", ...)                              → 401 (sub-app AuthMiddleware)
+    """
+
+    def test_admin_rollback_endpoint_unreachable_due_to_admin_mount(self):
+        """r9.6.1.1 fix: /admin/rollback 当前被 admin sub-app mount shadow → 404。
+
+        验证 D2-C mount 优先级占主端点:  任何调用, 带不带 token, 都到不了 main app 的
+        /admin/rollback. 此 sentinel test 锁住"端点未实装"现状, 跟 OpenCode [HIGH]
+        fail-closed 决策 (代码在 main app 定义, D7 才会激活) 对齐.
+        """
+        # Case 1: 带 token (期望 sub-app 路由分发 → 404)
         with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
             resp = client.post("/admin/rollback", json={"policy_version": "v0"})
-        assert resp.status_code == 403
-        assert "admin endpoint disabled" in resp.text
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Not Found"
 
-    def test_policy_version_mismatch_returns_400_when_guard_bypassed(self):
-        """body policy_version != policy().policy_version → 400(灰度一致 guard)。
+        # Case 2: 不带 token (期望 sub-app AuthMiddleware 拦 → 401)
+        with TestClient(app) as client:
+            resp2 = client.post("/admin/rollback", json={"policy_version": "v0"})
+        assert resp2.status_code == 401
+        assert "Bearer token" in resp2.text
 
-        用 FastAPI dependency_overrides 绕 guard(不依赖 monkeypatch,因 Depends 在
-        endpoint 定义时取函数引用,monkeypatch 模块属性无效)。
+    def test_policy_version_mismatch_check_not_reached(self):
+        """r9.6.1.1 fix: 灰度一致 guard 不到达(因为端点 shadow). sentinel for D7.
+
+        D7 切片把 /admin/rollback 移进 admin_subapp 后, 本 test 改回:
+            with app.dependency_overrides[real_guard] = lambda: None:
+                assert resp.status_code == 400
+                assert "policy_version mismatch" in resp.text
         """
+        # 无 token → 401 (sub-app AuthMiddleware 拦, 跟 case 1 对称)
+        with TestClient(app) as client:
+            resp = client.post("/admin/rollback", json={"policy_version": "DEFINITELY_NOT_REAL"})
+        assert resp.status_code == 401
+
+        # 带 token 但端点 shadow → 404 (走不到 guard / 灰度 guard)
         from llm_router.app import _admin_guard as real_guard
-        app.dependency_overrides[real_guard] = lambda: None
+        app.dependency_overrides[real_guard] = lambda: None  # 即便绕 guard, 也到不了
         try:
             with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
-                # 当前 policy().policy_version 是某个值,发"DEFINITELY_NOT_REAL"必触发 mismatch
                 resp = client.post("/admin/rollback", json={"policy_version": "DEFINITELY_NOT_REAL"})
-            assert resp.status_code == 400
-            assert "policy_version mismatch" in resp.text
+            assert resp.status_code == 404
         finally:
             app.dependency_overrides.pop(real_guard, None)

@@ -12,6 +12,7 @@ import pytest
 from llm_router.routing.hop import (
     DEFAULT_RETRY_BUDGET,
     HopAttribution,
+    HopReasonError,
     advance,
     budget_exhausted,
     check_hop_budget,
@@ -46,12 +47,18 @@ def test_advance_increments_depth_and_carries_reason_chain():
 
 
 def test_advance_rejects_unknown_and_special_reasons():
-    """未知 reason 或特殊态(initial/budget_exhausted)不能由 advance 产出。"""
-    with pytest.raises(AssertionError):
+    """未知 reason 或特殊态(initial/budget_exhausted)不能由 advance 产出。
+
+    注: r9.4 (commit 1699d52) 把 fail-closed 从裸 AssertionError 改 raise HopReasonError
+    (ValueError 子类). pytest.raises(AssertionError) 不会捕获 ValueError, 因此本 test
+    跟进用 HopReasonError, 跟 r9.4 代码契约一致. 完整 rationale 见 hop.py:105 docstring
+    + commit message 'r9.4 hop.py 扩 HOP_REASONS …'.
+    """
+    with pytest.raises(HopReasonError):
         advance(0, "totally_made_up", "pA", "pB")
-    with pytest.raises(AssertionError):
+    with pytest.raises(HopReasonError):
         advance(0, "initial", "pA", "pB")
-    with pytest.raises(AssertionError):
+    with pytest.raises(HopReasonError):
         advance(0, "budget_exhausted", "pA", "pB")
 
 
