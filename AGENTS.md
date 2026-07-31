@@ -36,7 +36,6 @@
 - 只有 CC、Codex、Hermes 执行后验证全部通过，任务才可交付。
 - 现有未提交改动不是本 Harness 试点的产物，必须保持不变。
 
-
 ## 三方辩证触发规则 (本项目 llm-router, 2026-07-31 加入)
 
 **完整规则**: [`.agent/rules/three-way-trigger.md`](.agent/rules/three-way-trigger.md)
