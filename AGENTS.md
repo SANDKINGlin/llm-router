@@ -35,3 +35,21 @@
 - 必须记录 changed_paths、command、exit_code、duration_ms、artifact 和三方报告。
 - 只有 CC、Codex、Hermes 执行后验证全部通过，任务才可交付。
 - 现有未提交改动不是本 Harness 试点的产物，必须保持不变。
+
+
+## 三方辩证触发规则 (本项目 llm-router, 2026-07-31 加入)
+
+**完整规则**: [`.agent/rules/three-way-trigger.md`](.agent/rules/three-way-trigger.md)
+
+### 摘要 (实施前 30s 判断)
+
+| 任务类型 | 是否需三方辩证 |
+|---|---|
+| 修复/任务**已得三方共识** + 边界不超出 + 风险 ≤ LOW-MEDIUM | ❌ 不需要 (单方 + 真验) |
+| 阻塞问题导致切片无法直接实施 | ✅ **必须**三方 |
+| 走向/策略/分支任务变更 | ✅ **必须**三方 |
+| 影响以后整体任务进程 | ✅ **必须**三方 |
+
+### 已知 precedent (本规则下已单方)
+
+- D11 (修 CI OpenSpec Validate 失败, 2026-07-31) — 跟 B7 同模式, LOW 风险, 单方 + 真验 ✅
