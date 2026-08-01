@@ -1,0 +1,52 @@
+{
+  "task_id": "B8-llmrouterphased-proposal",
+  "date": "2026-07-30",
+  "agent": "hermes-v5 (orchestrator) + cc + codex",
+  "verifier": "D5 validator + 7 vet grep",
+  "verification": [
+    {
+      "command": "ls -la openspec/changes/llm-router-phased/",
+      "expected": "proposal.md exist",
+      "actual": "3813B 真存",
+      "exit_code": 0
+    },
+    {
+      "command": "grep '## 继承自:' proposal.md",
+      "expected": "match REQUIRED_HEADER",
+      "actual": "match",
+      "exit_code": 0
+    },
+    {
+      "command": "grep -E '~/?ObsidianVault/' proposal.md | wc -l",
+      "expected": ">= 5",
+      "actual": "5 真链接",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 scripts/openspec_validate.py --change llm-router-phased",
+      "expected": "exit 0, BLOCK=0",
+      "actual": "exit 0, BLOCK=0, WARN=1 (tasks.md/specs/ 缺 不属 B8 范围)",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 scripts/openspec_validate.py --change llm-router-phased --strict",
+      "expected": "exit 2 (warn)",
+      "actual": "exit 2 (warn only)",
+      "exit_code": 2
+    },
+    {
+      "command": "git -C wt-llmrouterphased-proposal log --oneline -1",
+      "expected": "91610df 真 commit",
+      "actual": "91610df 真 commit",
+      "exit_code": 0
+    },
+    {
+      "command": "cp proposal.md master 路径",
+      "expected": "master 也存 proposal.md",
+      "actual": "3813B 真存",
+      "exit_code": 0
+    }
+  ],
+  "actual_signal": 1,
+  "conclusion": "B8 PASS-WITH-CAVEATS (BLOCK=0 跨切片 B8 BLOCKED 真解锁)"
+}
