@@ -1,53 +1,34 @@
-schema_version: 1
-status: ACTIVE
-task_id: llm-router-harness-pilot
-owner_agent: hermes
-worktree_path: /home/lin/projects/llm-router
-branch: master
-non_git_exception: null
+task_id: r9.6.2-17-fallback-e2e-test-fix
+owner_agent: codex
+worktree_path: /home/lin/projects/llm-router-wt-r9.6.2
+branch: fix/r9.6.2-17-fallback-test-fix-20260801-093639
+base_commit: 82b1322982d0c3d03c54218d1c339e8d64f25257
+
 allowed_paths:
-  - AGENTS.md
-  - .agent/task-manifest.yaml
-  - .harness/manifest.yaml
-  - .harness/evidence.schema.json
-  - .harness/runner.py
-  - .harness/build_evidence.py
-  - .harness/pre-commit-assessment.md
+  - tests/integration/test_17_fallback_e2e.py
+  - openspec/changes/r9.6.2-17-fallback-e2e-fix/
+
 forbidden_paths:
-  - src/**
-  - tests/**
-  - router-policy.yaml
-  - mnfst/**
+  - src/llm_router/api/cascade.py   # test-only fix,不动 prod code
+  - src/llm_router/store/trace.py
+  - tests/unit/**
+  - tests/e2e/**
   - pyproject.toml
+
 shared_paths:
-  - router-policy.yaml
-  - mnfst/providers.yaml
-shared_paths_policy:
-  default_access: READ_ONLY
-  writable_only_by: contract_owner
-contract_owner: user-existing-worktree
-path_conflict_policy:
-  allowed_vs_forbidden: BLOCKED
+  - .harness/manifest.yaml          # read-only
+
+contract_owner: codex (本切片唯一 writer)
+
 verification:
-  fast:
-    commands:
-      - .venv/bin/python -m pytest tests/unit -q
-    required: true
-  medium:
-    commands:
-      - .venv/bin/python -m pytest tests/unit -q
-      - .venv/bin/python -m pytest tests/integration -q
-    required: true
-  slow:
-    commands:
-      - .venv/bin/python -m pytest tests/e2e -q
-    required: true
-evidence_path: /tmp/llm-router-harness-pilot-evidence
-rollback:
-  command: remove only the seven allowed new Harness paths after confirming status
-  backup_path: NOT_APPLICABLE_NEW_FILES
-completion:
-  require_changed_paths_match: true
-  require_machine_readable_evidence: true
-  require_threeway_verification: true
-allowed_verdicts: [PASS, FAIL, BLOCKED, NOT_APPLICABLE]
+  fast: .venv/bin/python -m pytest tests/integration/test_17_fallback_e2e.py -q
+  medium: .venv/bin/python -m pytest tests/unit tests/integration -q
+  full: .venv/bin/python -m pytest tests -q
+
+evidence_path: /home/lin/projects/llm-router-wt-r9.6.2/.harness/evidence/r9.6.2/
+
+pr_path: gh pr create --base master --head fix/r9.6.2-17-fallback-test-fix-20260801-093639 --title 'fix(test): r9.6.2 17 Fallback E2E test-only 7→0 fail (跟 r9.6.1.1 precedent)'
+
+precedent: r9.6.1 (PR #5 190a27ac) + r9.6.1.1 (PR #6 82b1322) 都是 test-only fix
+risk_level: LOW
+threeway_required: true (用户 2026-08-01 原话"三方验证交付")
