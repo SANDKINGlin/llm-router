@@ -1,0 +1,28 @@
+{
+  "task_id": "r9.6.2-e2e-workflows-6fail-fix",
+  "branch": "wt/e2e-6fail-fix-20260802",
+  "base_commit": "f82297b",
+  "implementation_date": "2026-08-02T11:11:21+0800",
+  "changed_files": {
+    "src/llm_router/config.py": [
+      "+ thread/import os/tempfile/threading",
+      "+ _POLICY_OVERRIDE_PATH = router-policy.runtime.yaml",
+      "+ _policy_save_lock = threading.Lock()",
+      "+ Policy.save() method → model_save()",
+      "+ Policy.model_save() 原子写 + Lock",
+      "load_policy() 改: override > tracked > 默认 优先级"
+    ],
+    "src/llm_router/admin/app.py": [
+      "update_gray_percent handler 加 try/except OSError",
+      "+ CC 约束 3: 内存回滚 + 审计降级 + raise HTTPException(500)"
+    ],
+    "tests/integration/test_e2e_workflows.py": [
+      "test:158 /admin/backup/db-sizes → /api/admin/backup/db-sizes",
+      "test:181 /admin/metrics/circuit-breakers → /api/admin/metrics/circuit-breakers",
+      "test:201 /admin/health/status → /api/admin/health/status",
+      "test:86 if status==200 → assert status==200 (CC 约束 4)",
+      "test:110 if status==200 → assert status==200 + assert reload==60",
+      "test:237 if status==200 → assert status==200 + assert status=='updated'"
+    ]
+  }
+}

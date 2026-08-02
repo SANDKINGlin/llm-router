@@ -1,0 +1,26 @@
+Task: r9.6.2-e2e-workflows-6fail-fix (commit 7d038fb)
+
+Commands:
+  - unit: PYTHONPATH=src .venv/bin/python -m pytest tests/unit -q --tb=no
+  - integration_other: PYTHONPATH=src .venv/bin/python -m pytest tests/integration --tb=line -q --ignore=tests/integration/test_e2e_workflows.py
+  - e2e_workflows: PYTHONPATH=src .venv/bin/python -m pytest tests/integration/test_e2e_workflows.py -q --tb=no
+  - test_17: PYTHONPATH=src .venv/bin/python -m pytest tests/integration/test_17_fallback_e2e.py -q --tb=no
+
+Results (5 轮三方独立真验交叉一致):
+  - unit: 643 passed, 3 skipped, 1 warning in 42.25s
+  - integration_other: 2 failed pre-existing (F10 + phase1), 74 passed, 1 skipped
+  - e2e_workflows: 12 passed, 0 failed
+  - test_17: 1 fail F10 pre-existing, 16 passed
+
+Master baseline 对比 (无我改动):
+  - master unit 643 passed 跟 WT 完全一致
+  - master integration_other 2 failed (F10 + phase1) 跟 WT 完全一致
+  - master test_17 1 fail F10 跟 WT 完全一致
+
+Flaky test 发现:
+  - tests/integration/test_trace_concurrency.py::test_concurrent_same_key_executes_once
+  - 5 次跑实测 4:1 pass:fail (master 跟 WT 同模式)
+  - aiosqlite 'Event loop is closed' pytest-asyncio 测试隔离偶发问题
+  - 跟实施完全无关 (pre-existing flaky)
+
+Verdict: PASS (不引入新 fail, 5 轮数字 100% 一致, flaky 已坐实)

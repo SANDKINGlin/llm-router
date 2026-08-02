@@ -1,0 +1,15 @@
+Task: r9.6.2-e2e-workflows-6fail-fix (commit 7d038fb, amended from c487766)
+Worktree: wt/e2e-6fail-fix-20260802
+Command: PYTHONPATH=src .venv/bin/python -m pytest tests/integration/test_e2e_workflows.py --tb=short -q
+
+三轮 + 二轮 fresh 真验 (数字交叉一致):
+  - Hermes 主会话: 12 passed, 8 warnings in 0.26s
+  - CC 第四轮: 12 passed 0 failed
+  - Codex 第四轮: 12 passed (12 个 test 名全列出)
+  - Hermes 第五轮 fresh (commit 7d038fb): 12 passed 0 failed
+  - CC 第五轮 fresh: 12 passed 0 failed
+  - Codex 第五轮 fresh: 12 passed (12 个 test 名全列)
+
+Expected: 12 passed 0 failed (跟 baseline 6 failed 6 passed -> 12 passed 完美闭环)
+Actual: 12 passed 0 failed ✅ (5 轮数字 100% 一致)
+Verdict: PASS (跨 commit c487766 -> 7d038fb 一致)
