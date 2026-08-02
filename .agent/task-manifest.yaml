@@ -1,34 +1,57 @@
-task_id: r9.6.2-17-fallback-e2e-test-fix
-owner_agent: codex
-worktree_path: /home/lin/projects/llm-router-wt-r9.6.2
-branch: fix/r9.6.2-17-fallback-test-fix-20260801-093639
-base_commit: 82b1322982d0c3d03c54218d1c339e8d64f25257
+task_id: r9.6.2-e2e-workflows-6fail-fix
+owner_agent: hermes
+worktree_path: /home/lin/projects/llm-router-wt-e2e-6fail-fix
+branch: wt/e2e-6fail-fix-20260802
+base_commit: f82297b1a01e9d66e1e36f3a6b3f6bb7d3e9d5f0  # master HEAD
 
 allowed_paths:
-  - tests/integration/test_17_fallback_e2e.py
-  - openspec/changes/r9.6.2-17-fallback-e2e-fix/
+  - src/llm_router/config.py
+  - src/llm_router/admin/app.py
+  - tests/integration/test_e2e_workflows.py
+  - .harness/evidence/r9.6.2-e2e-workflows-6fail/
+  - .agent/task-manifest.yaml
 
 forbidden_paths:
-  - src/llm_router/api/cascade.py   # test-only fix,不动 prod code
+  - pyproject.toml
+  - router-policy.yaml                  # shared read-only (CC 约束 1: 写 override 不碰 tracked 基线)
+  - mnfst/providers.yaml                # shared read-only
+  - src/llm_router/admin/__pycache__/   # CI auto-gen
+  - src/llm_router/api/cascade.py
   - src/llm_router/store/trace.py
   - tests/unit/**
   - tests/e2e/**
-  - pyproject.toml
 
 shared_paths:
-  - .harness/manifest.yaml          # read-only
+  - .harness/manifest.yaml
 
-contract_owner: codex (本切片唯一 writer)
+contract_owner: hermes (本切片唯一 writer; 三方会诊已 100% 收敛)
 
 verification:
-  fast: .venv/bin/python -m pytest tests/integration/test_17_fallback_e2e.py -q
-  medium: .venv/bin/python -m pytest tests/unit tests/integration -q
-  full: .venv/bin/python -m pytest tests -q
+  fast: .venv/bin/python -m pytest tests/integration/test_e2e_workflows.py --tb=short -q
+  medium: .venv/bin/python -m pytest tests/unit tests/integration -q --tb=line
+  full: .venv/bin/python -m pytest tests -q --tb=no
 
-evidence_path: /home/lin/projects/llm-router-wt-r9.6.2/.harness/evidence/r9.6.2/
+evidence_path: /home/lin/projects/llm-router-wt-e2e-6fail-fix/.harness/evidence/r9.6.2-e2e-workflows-6fail/
 
-pr_path: gh pr create --base master --head fix/r9.6.2-17-fallback-test-fix-20260801-093639 --title 'fix(test): r9.6.2 17 Fallback E2E test-only 7→0 fail (跟 r9.6.1.1 precedent)'
+pr_path: gh pr create --base master --head wt/e2e-6fail-fix-20260802 \
+        --title 'fix(ci): r9.6.2 e2e_workflows 6→0 fail (D1 + CC 第二轮 3 工程约束)' \
+        --body '本切片为 r9.6.2 后切片 #2 (e2e_workflows 6 fail 修复). 三方辩证三轮 100% 收敛 (CC+Codex+Hermes). 跨 r9.6.x test-only precedent 边界 (首个非 test-only 切片), 理由 = D2-A stub 真生产事故 (settings.html:130 UI 真调). D2-A stub 闭环 (commit 0a5c7f6 遗留). dirty tree 处理 = 写 override 路径 router-policy.runtime.yaml. WT 命名回归 wt/ 主流 (vs 切片#1 fix/ test-only precedent).'
 
-precedent: r9.6.1 (PR #5 190a27ac) + r9.6.1.1 (PR #6 82b1322) 都是 test-only fix
-risk_level: LOW
-threeway_required: true (用户 2026-08-01 原话"三方验证交付")
+precedent: r9.6.1 (PR #5 190a27a) + r9.6.1.1 (PR #6 82b1322) + r9.6.2 (PR #7 bbdce42) — 前 3 个切片全 test-only, 本切片是 r9.6.x 系列首个 src+test 混改 (实现 Policy.save() stub, 非容忍)
+risk_level: LOW-MEDIUM (跨 precedent 边界, 触 src/config.py + admin/app.py)
+threeway_required: true (用户 2026-08-02 原话"调用三方辩证,直到共识再进行下一步切片任务")
+
+implementation_plan:
+  - step_1: WT 隔离 (本 task-manifest + branch wt/e2e-6fail-fix-20260802)
+  - step_2: config.py Policy 加 model_save() (override 路径 + 原子写 + Lock)
+  - step_3: config.py load_policy 改优先级 (override > tracked)
+  - step_4: admin/app.py:1498 改 save()→model_save() + try/except + 内存回滚 + 审计降级
+  - step_5: tests/integration/test_e2e_workflows.py 改 3 处路径 /admin/*→/api/admin/*
+  - step_6: 3 处 save test 恢复严格断言 (不再 raise_server_exceptions=False)
+  - step_7: pytest fast 12 passed + medium 0 新 fail + 三方真验 (CC+Codex+Hermes 独立跑)
+
+constraints_from_threeway:
+  - CC_constraint_1: router-policy.yaml dirty tree → save() 写 router-policy.runtime.yaml (override 路径)
+  - CC_constraint_2: 原子写 (tempfile.mkstemp + os.replace) + threading.Lock (并发安全)
+  - CC_constraint_3: handler 容错 (try/except OSError) + 内存回滚 (gray_percent=old_percent) + 审计降级 (GRANULAR_CHANGE_FAILED + raise 500)
+  - CC_constraint_4: 3 处 save test 恢复严格断言 (验 gray_percent 真生效 + 验 reload==60 持久化 + 验 status==updated)

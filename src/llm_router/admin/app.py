@@ -1486,7 +1486,7 @@ class GrayPercentUpdate(BaseModel):
 
 @admin_app.put("/admin/settings/gray_percent")
 async def update_gray_percent(req: GrayPercentUpdate):
-    """更新灰度百分比。"""
+    """更新灰度百分比 (r9.6.2 后切片 #2: CC 约束 3 = try/except + 内存回滚 + 审计降级)."""
     if not (0 <= req.percent <= 100):
         raise HTTPException(status_code=400, detail="gray_percent must be between 0 and 100")
 
@@ -1494,8 +1494,28 @@ async def update_gray_percent(req: GrayPercentUpdate):
     old_percent = current_policy.gray_percent
     current_policy.gray_percent = req.percent
 
-    # 保存配置
-    current_policy.save()
+    # 保存配置 (D2-A stub 实装: Policy.save() → model_save() 写 override 路径)
+    # 包 try/except OSError: IO 失败时三步 (CC 约束 3):
+    #   (i) 内存回滚 gray_percent=old_percent (1494 已存旧值)
+    #   (ii) audit_logger 写 GRANULAR_CHANGE_FAILED (result="FAILURE")
+    #   (iii) raise HTTPException(500)
+    try:
+        current_policy.save()
+    except OSError as e:
+        # (i) 内存回滚 (避免内存/磁盘漂移)
+        current_policy.gray_percent = old_percent
+        # (ii) 审计降级 (不让 save 失败沉默)
+        get_audit_logger().log(
+            "admin",
+            "UPDATE_GRAY_PERCENT_FAILED",
+            {"old": old_percent, "new": req.percent, "error": str(e)},
+            result="FAILURE",
+        )
+        # (iii) 返 500 (让前端显示更新失败)
+        raise HTTPException(
+            status_code=500,
+            detail=f"failed to persist gray_percent: {e}",
+        ) from e
 
     get_audit_logger().log("admin", "UPDATE_GRAY_PERCENT", {
         "old": old_percent,

@@ -86,14 +86,15 @@ class TestE2EGrayRelease:
             response = client.put("/admin/settings/gray_percent", json={
                 "percent": 30
             })
+            # CC 约束 4: save() 实装后恢复严格断言 (不再容忍)
+            assert response.status_code == 200
 
-            if response.status_code == 200:
-                # 步骤2：验证新值立即生效
-                updated_policy = policy()
-                assert updated_policy.gray_percent == 30
+            # 步骤2：验证新值立即生效 (内存 + 持久化双生效)
+            updated_policy = policy()
+            assert updated_policy.gray_percent == 30
 
-                # 步骤3：模拟100个请求，验证约30%进入灰度组
-                # （这里简化验证，实际需要发送真实请求）
+            # 步骤3：模拟100个请求，验证约30%进入灰度组
+            # （这里简化验证，实际需要发送真实请求）
 
         finally:
             # 恢复原值
@@ -103,22 +104,24 @@ class TestE2EGrayRelease:
                 })
 
     def test_config_persistence_after_reload(self):
-        """测试配置修改后重载保持新值。"""
+        """测试配置修改后重载保持新值 (CC 约束 4: save() 实装后严格断言 reload 持久化)."""
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：调整灰度%
         response = client.put("/admin/settings/gray_percent", json={
             "percent": 60
         })
+        assert response.status_code == 200
 
-        if response.status_code == 200:
-            # 步骤2：触发重载（模拟SIGHUP）
-            from llm_router.config import load_policy
-            load_policy()
+        # 步骤2：触发重载 (模拟 SIGHUP / restart)
+        # model_save() 写 override 路径 (router-policy.runtime.yaml),
+        # load_policy() 优先级 override > tracked, 重读必返 60
+        from llm_router.config import load_policy
+        load_policy()
 
-            # 步骤3：验证重载后配置保持60%
-            reloaded_policy = policy()
-            assert reloaded_policy.gray_percent == 60
+        # 步骤3：验证重载后配置保持60% (持久化)
+        reloaded_policy = policy()
+        assert reloaded_policy.gray_percent == 60
 
 
 class TestE2EBackupRestore:
@@ -154,7 +157,7 @@ class TestE2EBackupRestore:
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：查询数据库大小
-        response = client.get("/admin/backup/db-sizes")
+        response = client.get("/api/admin/backup/db-sizes")
         assert response.status_code == 200
 
         sizes = response.json()
@@ -177,7 +180,7 @@ class TestE2EObservationAccuracy:
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 步骤1：查询熔断状态
-        response = client.get("/admin/metrics/circuit-breakers")
+        response = client.get("/api/admin/metrics/circuit-breakers")
         assert response.status_code == 200
 
         data = response.json()
@@ -197,7 +200,7 @@ class TestE2EObservationAccuracy:
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
 
         # 查询健康状态
-        response = client.get("/admin/health/status")
+        response = client.get("/api/admin/health/status")
         assert response.status_code == 200
 
         data = response.json()
@@ -235,10 +238,9 @@ class TestE2EUserWorkflows:
         # 简化验证：配置调整API
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
         response = client.put("/admin/settings/gray_percent", json={"percent": 50})
-
-        if response.status_code == 200:
-            # 验证配置已更新
-            assert response.json()["status"] == "updated"
+        # CC 约束 4: save() 实装后恢复严格断言 (不再容忍)
+        assert response.status_code == 200
+        assert response.json()["status"] == "updated"
 
     def test_scenario_migration_preparation(self):
         """场景：系统迁移前导出备份，迁移后导入恢复。"""

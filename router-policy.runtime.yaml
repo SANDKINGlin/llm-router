@@ -1,0 +1,26 @@
+version: 1
+policy_version: 0.1.0
+gray_percent: 50
+providers:
+- name: mock
+  entity: null
+  tier: fast
+  quota: 1000000
+  cooldown_s: 30
+  is_free: true
+  cost_multiplier: 0.0
+  ip_safety_rank: safe
+  model: null
+  base_url: null
+  api_key_env: null
+tiers:
+  strong: []
+  medium: []
+  fast:
+  - mock
+sort_keys:
+- ip_safety_rank
+- is_free
+- quota_remaining
+- capability_match
+- model_strength

@@ -1,0 +1,28 @@
+{
+  "round_1": {
+    "CC": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-6fail-CC-三方-2026-08-02.md (34139B MD5 7036c57d)",
+    "Codex": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-6fail-Codex-三方-2026-08-02.md (19055B MD5 6a3e12b5)",
+    "Hermes": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-6fail-Hermes-三方-2026-08-02.md (13321B MD5 2b62f01e)"
+  },
+  "round_2": {
+    "CC": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-r2-CC-三方收敛-2026-08-02.md (16587B MD5 718410af)",
+    "Codex": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-r2-Codex-三方收敛-2026-08-02.md (18193B MD5 ca102df4)",
+    "Hermes": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-r2-Hermes-三方收敛-2026-08-02.md (9362B MD5 021fd304)"
+  },
+  "round_3": {
+    "CC": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-r3-CC-三方100%收敛-2026-08-02.md (9808B MD5 de5e1a28)",
+    "Codex": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-r3-Codex-三方100%收敛-2026-08-02.md (10155B MD5 51748ed9)",
+    "Hermes": "/home/lin/ObsidianVault/20-记忆/共享/research/r9.6.2-e2e-workflows-r3-Hermes-三方100%收敛-2026-08-02.md (11839B MD5 aef4f246)"
+  },
+  "round_4_post_impl_verification": {
+    "CC": "/home/lin/ObsidianVault/.../r9.6.2-e2e-workflows-r4-CC-实施后真验-2026-08-02.md (8519B MD5 1643c677)",
+    "Codex": "/home/lin/ObsidianVault/.../r9.6.2-e2e-workflows-r4-Codex-实施后真验-2026-08-02.md (42744B MD5 5dd4643f)",
+    "Hermes": "/home/lin/ObsidianVault/.../r9.6.2-e2e-workflows-r4-Hermes-实施后真验-2026-08-02.md (10967B MD5 9d3d43df)"
+  },
+  "round_5_amended_fresh_verify": {
+    "CC": "/home/lin/ObsidianVault/.../r9.6.2-e2e-workflows-r5-CC-amended-fresh-真验-2026-08-02.md (14789B MD5 fa72f225)",
+    "Codex": "/home/lin/ObsidianVault/.../r9.6.2-e2e-workflows-r5-Codex-amended-fresh-真验-2026-08-02.md (12854B MD5 5922a023)",
+    "Hermes": "/home/lin/ObsidianVault/.../r9.6.2-e2e-workflows-r5-Hermes-amended-fresh-真验-2026-08-02.md (10536B MD5 316d52c5)",
+    "key_finding": "amend 后 7d038fb 三处 src/test 文件 blob MD5 跟 c487766 100% 一致 (verify amend 没破坏); test_trace_concurrency 是 flaky test (5 次跑 4:1 pass:fail, 跟实施无关)"
+  }
+}

@@ -1,6 +1,15 @@
-"""router-policy.yaml 加载。S1.3:ProviderEntry 真实 schema + pydantic 校验(CI 门禁)。"""
+"""router-policy.yaml 加载。S1.3:ProviderEntry 真实 schema + pydantic 校验(CI 门禁)。
+
+r9.6.2 后切片 #2 (e2e_workflows 6-fail fix) 新增:
+- Policy.model_save() / .save() 写 override 路径 (CC 约束 1, 不碰 tracked 基线)
+- load_policy 优先级: override > tracked > 默认 (CC 约束 1)
+- threading.Lock 保并发写安全 (CC 约束 2)
+"""
 from __future__ import annotations
 
+import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -8,6 +17,10 @@ import yaml
 from pydantic import BaseModel, Field
 
 _POLICY_PATH = Path(__file__).resolve().parents[2] / "router-policy.yaml"
+_POLICY_OVERRIDE_PATH = _POLICY_PATH.with_name(_POLICY_PATH.stem + ".runtime.yaml")
+
+# 并发写锁 (CC 约束 2: 防多请求同时 PUT gray_percent 写写 race)
+_policy_save_lock = threading.Lock()
 
 # IP 安全等级映射（r9.3 排序键第1 维）
 IP_SAFETY_RANK = {"safe": 0, "risky": 1, "forbidden": 2}
@@ -66,19 +79,95 @@ class Policy(BaseModel):
         ]
     )
 
+    def save(self, path: "Path | None" = None) -> None:
+        """落盘 Policy 到 override 路径 (CC 约束 1: 不碰 tracked 基线).
+
+        默认写 _POLICY_OVERRIDE_PATH (router-policy.runtime.yaml). 不传 path
+        时, 走 model_save() 同实现.
+
+        调用方约定: 由 admin/app.py handler 包 try/except, IO 失败时审计写
+        GRANULAR_CHANGE_FAILED + raise HTTPException(500), 见 CC 约束 3.
+        """
+        self.model_save(path=path)
+
+    def model_save(self, path: "Path | None" = None) -> None:
+        """原子写 Policy 到 path 或 override 路径 (CC 约束 1 + 2).
+
+        实施细节:
+        - 写路径: 默认 _POLICY_OVERRIDE_PATH, 不传 path 时同 save()
+        - 原子写: tempfile.mkstemp + os.replace (防写半截崩溃, CC 约束 2)
+        - 并发锁: _policy_save_lock (CC 约束 2, 防多请求写写 race)
+        - 序列化: yaml.safe_dump + model_dump(mode="python") (Pydantic v2 兼容)
+        - 不动 _POLICY_PATH (tracked 基线, git working tree 不 dirty)
+
+        Raises:
+            OSError: 写失败 (由调用方 handler 捕获并审计降级)
+        """
+        target = Path(path) if path is not None else _POLICY_OVERRIDE_PATH
+        data = self.model_dump(mode="python")
+        with _policy_save_lock:
+            fd, tmp = tempfile.mkstemp(
+                dir=target.parent, prefix=target.stem + ".", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    yaml.safe_dump(
+                        data, f, allow_unicode=True, sort_keys=False
+                    )
+                os.replace(tmp, target)
+            except Exception:
+                # 失败清理 tmp (不污染 dir)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+
 
 _policy: Policy | None = None
 
 
 def load_policy(path: Path | None = None) -> Policy:
-    """加载 router-policy.yaml。文件缺失回退默认(S0.0 容错)。"""
+    """加载 Policy 优先级: override > tracked > 默认 (CC 约束 1).
+
+    加载顺序:
+    1. 如果传 path, 用 path 加载 (测试兼容)
+    2. 否则: 先尝试 _POLICY_OVERRIDE_PATH (router-policy.runtime.yaml), 不存在则
+       尝试 _POLICY_PATH (router-policy.yaml, tracked 基线), 都不存在回退默认
+       (S0.0 容错)
+
+    override 优先实现 admin UI 运行时持久化 (gray_percent 调整) 不污染 git
+    tracked 基线. 启动时 override 加载 → 内存 Policy 是运行时最新值.
+    """
     global _policy
-    p = path or _POLICY_PATH
-    try:
-        data = yaml.safe_load(p.read_text()) or {}
-        _policy = Policy(**data)
-    except FileNotFoundError:
-        _policy = Policy()
+    if path is not None:
+        try:
+            data = yaml.safe_load(Path(path).read_text()) or {}
+            _policy = Policy(**data)
+        except FileNotFoundError:
+            _policy = Policy()
+        return _policy
+
+    # 默认加载顺序: override > tracked > 默认
+    for candidate in (_POLICY_OVERRIDE_PATH, _POLICY_PATH):
+        try:
+            data = yaml.safe_load(candidate.read_text()) or {}
+            _policy = Policy(**data)
+            return _policy
+        except FileNotFoundError:
+            continue
+        except (yaml.YAMLError, ValueError, TypeError) as e:
+            # yaml 损坏或 schema 不匹配: 警告并继续下一个候选
+            import warnings
+            warnings.warn(
+                f"load_policy: {candidate} 解析失败 ({type(e).__name__}: {e}),"
+                f" 跳过",
+                RuntimeWarning,
+            )
+            continue
+
+    # 全失败: 回退默认 (S0.0 容错)
+    _policy = Policy()
     return _policy
 
 
