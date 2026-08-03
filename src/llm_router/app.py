@@ -616,62 +616,7 @@ async def anthropic_messages(req: _AnthropicRequest, request: Request) -> dict:
 
 
 # ── S4.3 · 应急回滚端点 ─────────────────────────────────────────────────────
-
-
-class _RollbackRequest(BaseModel):
-    """S4.3:/admin/rollback body。policy_version 必须 == policy().policy_version(灰度一致 guard)。
-
-    字段含义:操作方已 revert policy.yaml 到目标版本;端点收到后比 body 的 version 与
-    当前 policy().policy_version,一致才执行(防"操作方以为回了但 yaml 还没生效"的隐式不一致)。
-    """
-
-    policy_version: str = Field(..., description="回滚目标版本号(必须 == 当前 policy().policy_version)")
-
-
-def _admin_guard() -> None:
-    """S4.3 占位鉴权(D7 TODO:真 admin token / RBAC)。fail-closed:任何调用一律 403。
-
-    OpenCode 节点 1 [HIGH] 决策:不留空 body,直接把端点锁住,防团队忘记加鉴权就让
-    /admin/rollback 上线(D7 才会替换此 guard)。
-    """
-    raise HTTPException(
-        status_code=403,
-        detail="admin endpoint disabled (D7 TODO: real auth — token/RBAC)",
-    )
-
-
-@app.post("/admin/rollback")
-def admin_rollback(req: _RollbackRequest, _admin: None = Depends(_admin_guard)) -> dict:
-    """S4.3:policy 回滚状态同步端点。需 admin 鉴权(D7 TODO)。
-
-    流程(应用层编排,职责分离——cascade 只管 CB+candidate,strategy/cost_gate/enforcer
-    各自 refresh):
-      1. 鉴权:_admin_guard 直接 403(fail-closed 占位)
-      2. 灰度一致 guard:body.policy_version 必须 == policy().policy_version
-      3. 重新读 manifest + policy → 构造新 candidates 与 entries 字典
-      4. 同步刷新 strategy.refresh_entries / cost_gate.update_quotas / enforcer.rebuild
-      5. cascade.apply_policy(new_candidates, policy_version)
-
-    Returns:
-        {"applied": bool, "policy_version": str, "candidates": list[str]}
-    """
-    # ② 灰度一致 guard(OpenCode 节点 1 [MED])
-    pol = policy()
-    if req.policy_version != pol.policy_version:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"policy_version mismatch: body={req.policy_version} "
-                f"policy()={pol.policy_version} (revert policy.yaml 后再调)"
-            ),
-        )
-    # ③ 重新构造候选(同 _build_cascade 同形,Phase B 三层:静态真→动态→mock)
-    manifest_entries = load_manifest()
-    entries, candidates = _build_three_layer_candidates(pol, manifest_entries)
-    # ④+⑤ 同步刷新 strategy/cost_gate/enforcer + apply_policy(单一刷新源 _refresh_and_apply)
-    applied = _refresh_and_apply(_cascade, entries, candidates, req.policy_version)
-    return {
-        "applied": applied,
-        "policy_version": req.policy_version,
-        "candidates": [n for n, _p, _k in candidates],
-    }
+# D7 切片: 路由从 main app 搬进 admin_subapp (admin/app.py:1554 @admin_app.post
+# "/admin/rollback") + Depends(get_current_user_with_permission("admin")) 双层
+# defense-in-depth。app.py 死代码 (_RollbackRequest / _admin_guard / admin_rollback)
+# 全部删除, 留 S4.3 注释指向 admin/app.py 新位置。
