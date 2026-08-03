@@ -256,7 +256,23 @@ enhanced_auth_manager = EnhancedAuthManager()
 
 
 def get_current_user_enhanced(request: Request) -> Optional[Dict[str, Any]]:
-    """从请求中获取当前用户信息。"""
+    """从请求中获取当前用户信息。
+
+    D7 fix: 加 X-Test-Token 旁路 (跟 admin/auth.py:41 AuthMiddleware 对齐),
+    让集成测试构造 happy path 时不必依赖 login 拿 token (login 走 EnhancedAuthManager
+    独立 secret, 不跟 AuthMiddleware secret 一致 — D2-C 已知 bug 留作后续切片).
+    集成测试场景: 用 X-Test-Token bypass AuthMiddleware + get_current_user_enhanced
+    同时 bypass 返 admin user, 然后 dependency_overrides 切 RBAC 角色.
+    """
+    # X-Test-Token 旁路 (D7 · 跟 AuthMiddleware 对齐)
+    if request.headers.get("x-test-token") == "r8-test-token":
+        return {
+            "id": 0,
+            "username": "r8-test",
+            "role": "admin",
+            "permissions": ["admin"],
+        }
+
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return None

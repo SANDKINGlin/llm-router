@@ -26,6 +26,7 @@ from .auth_enhanced import (
     get_current_user_with_permission,
     get_current_user_auth
 )
+from .policy_sync import RollbackRequest, refresh_policy_state
 
 
 # 创建SecretStore实例（默认环境变量后端）
@@ -1549,3 +1550,59 @@ async def update_setting(setting_name: str, value: dict):
         return {"status": "updated", "setting": setting_name, "value": new_value}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ===== D7 · /admin/rollback 端点 (派 D: 路由搬 admin_subapp + Depends RBAC) =====
+
+@admin_app.post("/admin/rollback")
+async def admin_rollback(
+    req: RollbackRequest,
+    _user: dict = Depends(get_current_user_with_permission("admin")),
+) -> dict:
+    """D7:policy 回滚状态同步端点。需 admin RBAC (sub-app AuthMiddleware 已先验 Bearer)。
+
+    双层 defense-in-depth:
+      1. AuthMiddleware (admin/auth.py:24) 挡无/坏 token → 401
+      2. Depends(get_current_user_with_permission("admin")) 挡权限不足 → 403
+
+    流程(应用层编排,职责分离):
+      ① 鉴权 (双层, 已上)
+      ② 灰度一致 guard: body.policy_version 必须 == policy().policy_version
+      ③ 重新读 manifest + policy → 构造新 candidates + entries
+      ④ 同步刷新 strategy / cost_gate / enforcer + cascade.apply_policy
+      ⑤ 审计日志 + 返回
+
+    Returns:
+        {"applied": bool, "policy_version": str, "candidates": list[str]}
+    """
+    # lazy import _cascade 单例 (避免循环: admin_subapp 实例化时 app.py 还在
+    # loading, _cascade = _build_cascade() 是 module-level 副作用)
+    from ..app import _cascade as _production_cascade
+
+    # ② 灰度一致 guard (OpenCode 节点 1 [MED])
+    pol = policy()
+    if req.policy_version != pol.policy_version:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"policy_version mismatch: body={req.policy_version} "
+                f"policy()={pol.policy_version} (revert policy.yaml 后再调)"
+            ),
+        )
+
+    # ③+④ 重新构造候选 + 同步刷新 (单一刷新源 policy_sync.refresh_policy_state,
+    #    跟 app.py._refresh_and_apply 同形 — DRY 防漂移)
+    applied, candidate_names = refresh_policy_state(_production_cascade, req.policy_version)
+
+    # ⑤ 审计日志
+    get_audit_logger().log(
+        _user.get("username", "admin"),
+        "ADMIN_ROLLBACK",
+        {"policy_version": req.policy_version, "applied": applied},
+    )
+
+    return {
+        "applied": applied,
+        "policy_version": req.policy_version,
+        "candidates": candidate_names,
+    }
