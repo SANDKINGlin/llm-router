@@ -263,9 +263,23 @@ def get_current_user_enhanced(request: Request) -> Optional[Dict[str, Any]]:
     独立 secret, 不跟 AuthMiddleware secret 一致 — D2-C 已知 bug 留作后续切片).
     集成测试场景: 用 X-Test-Token bypass AuthMiddleware + get_current_user_enhanced
     同时 bypass 返 admin user, 然后 dependency_overrides 切 RBAC 角色.
+
+    ⚠️ D7 CC 复核关切 (FAIL): 之前实现无条件返 admin role, 是新增高风险点 —
+    任何能访问服务的人都可复制固定头通过回滚 RBAC. 修正:
+      1. 硬门禁 = ENV flag LLM_ROUTER_TEST_TOKEN_BYPASS=on (默认 off, 生产永远 off)
+      2. 软门禁 = client host ∈ {127.0.0.1, ::1, localhost, testclient} (防御意外)
+      3. 三个条件必须同时满足才放行 (defense-in-depth)
     """
-    # X-Test-Token 旁路 (D7 · 跟 AuthMiddleware 对齐)
+    # X-Test-Token 旁路 (D7 · 跟 AuthMiddleware 对齐 + 安全门禁)
     if request.headers.get("x-test-token") == "r8-test-token":
+        # 硬门禁 ENV: 默认 off, 必须显式开启
+        import os as _os
+        if _os.environ.get("LLM_ROUTER_TEST_TOKEN_BYPASS", "").lower() != "on":
+            return None  # 生产路径: 跟无 Authorization 一样返 None → RBAC 401
+        # 软门禁 localhost: 即使开了 env flag, 也只允许 loopback 调用
+        client_host = (request.client.host if request.client else "") or ""
+        if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+            return None
         return {
             "id": 0,
             "username": "r8-test",

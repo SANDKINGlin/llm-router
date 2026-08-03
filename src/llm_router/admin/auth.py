@@ -38,8 +38,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Test token bypass for integration tests
+        # D7 CC 复核关切: 之前无条件放行, 加 ENV 门禁 (默认 off, 生产永远 off)
         if request.headers.get('x-test-token') == 'r8-test-token':
-            return await call_next(request)
+            import os as _os
+            if _os.environ.get("LLM_ROUTER_TEST_TOKEN_BYPASS", "").lower() == "on":
+                return await call_next(request)
+            # env off → fall through to Bearer check (防御意外, 跟生产路径一致)
 
         # 远程访问需要Bearer Token认证
         if request.url.path.startswith("/admin/"):

@@ -366,7 +366,19 @@ app = FastAPI(
 # Admin 模块以前设计独立跑 :8790 (admin/app.py 头注释), v2 D2-C 决议 mount 进数据面同一进程.
 # 挂载策略: app.mount 共享 lifespan, admin_subapp 用 SharedASGIMiddleware.
 # 无 admin_subapp (cryptography 缺 / D4 切片) 时 skip mount 不崩.
+#
+# D7 fix (CC 复核关切): Starlette mount 会剥除 /admin prefix 再交给子应用,
+# 子应用实际收到的路径是 /admin/rollback (没剥 prefix), 但 admin_subapp 的现有 46
+# 个路由用 /admin/... 全路径注册, 因此单前缀 /admin/rollback 在 mount 后变成
+# /rollback (找不到) → 404. D7 把 admin_rollback endpoint 注册到 admin_subapp 时
+# 也用了 /admin/rollback, 故需要客户端用双前缀 /admin/admin/rollback 才能命中.
+# 加 D7SinglePrefixASGIMiddleware 在 main app 上做透明重写: 单前缀 /admin/rollback
+# → scope["path"] 改写成 /admin/admin/rollback, 客户端契约不变 (单前缀),
+# admin_subapp 仍按双前缀匹配. middleware 装在 mount 之前, 让 mount 接 scope 时
+# 已是双前缀路径.
 if admin_subapp is not None:
+    from .admin.middleware import D7SinglePrefixRewriteMiddleware
+    app.add_middleware(D7SinglePrefixRewriteMiddleware)
     app.mount("/admin", admin_subapp)
 
 
@@ -616,7 +628,5 @@ async def anthropic_messages(req: _AnthropicRequest, request: Request) -> dict:
 
 
 # ── S4.3 · 应急回滚端点 ─────────────────────────────────────────────────────
-# D7 切片: 路由从 main app 搬进 admin_subapp (admin/app.py:1554 @admin_app.post
-# "/admin/rollback") + Depends(get_current_user_with_permission("admin")) 双层
-# defense-in-depth。app.py 死代码 (_RollbackRequest / _admin_guard / admin_rollback)
-# 全部删除, 留 S4.3 注释指向 admin/app.py 新位置。
+# D7 切片: 路由已从 main app 搬进 admin_subapp (admin/app.py @admin_app.post),
+# 双层 defense-in-depth (AuthMiddleware + Depends RBAC). 死代码已彻底删除.
