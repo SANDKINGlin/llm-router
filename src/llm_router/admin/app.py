@@ -67,10 +67,20 @@ class LoginRequest(BaseModel):
 
 @admin_app.post("/admin/auth/login")
 async def login(req: LoginRequest) -> dict:
-    """登录接口，生成Bearer Token。"""
+    """登录接口，生成Bearer Token。
+
+    S1 (2026-08-04): 改用 enhanced_auth_manager.create_token() 签 3 段 token
+    (不是 auth.py:generate_token() 2 段简化 token), 跟 /api/admin/users 等
+    require_enhanced_permission 装饰器期望的 token 格式对齐.
+    否则 mount 端到端鉴权 (Step 5) 会因 token 格式不兼容而 401.
+    """
     # 简化版：用户名密码验证（生产环境用真实数据库）
     if req.username == "admin" and req.password == "admin":
-        token = generate_token()
+        # S1: 跟 /api/admin/auth/login 用同一签发路径, 保持 token 格式一致
+        user = enhanced_auth_manager.authenticate_user(req.username, req.password) or {
+            "id": 1, "username": req.username, "role": "admin", "permissions": ["admin", "view", "manage_keys"]
+        }
+        token = enhanced_auth_manager.create_token(user)
         get_audit_logger().log("admin", "LOGIN", {"username": req.username}, result="SUCCESS")
         return {"token": token, "expires_in": 86400}
     else:

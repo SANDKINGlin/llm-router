@@ -29,7 +29,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         mount_prefix = request.scope.get("root_path", "") or ""
         raw_path = request.url.path
         sub_path = raw_path[len(mount_prefix):] if mount_prefix and raw_path.startswith(mount_prefix) else raw_path
-        if sub_path in ["/healthz", "/admin/auth/login"] or raw_path.endswith("/admin/auth/login"):
+        # S1 (2026-08-04): admin 子应用内部路由全部依赖 Depends(get_current_user_enhanced) 自鉴权
+        # (跟 D7 派 D 同步). AuthMiddleware 只挡 *远程 + 非白名单*, 子应用内路由白名单跳过.
+        # 不白名单会让 AuthMiddleware 用自家 2 段 token 格式去验 EnhancedAuthManager 的 3 段 token (mounted 必然 401).
+        # 白名单仅限 EnhancedAuthManager 子应用内路由 (跟 admin/app.py 注册路径一致),
+        # 收窄到 /api/admin/users 等已知 endpoint 避免过宽白名单 (远程生产暴露风险)
+        _enhanced_self_routes = [
+            "/admin/auth/login",     # Step 4 login (X1 已加)
+            "/api/admin/users",      # Step 5 mount 端到端 (S1 新加)
+            "/api/admin/keys",       # 密钥管理 (sub-app 自管)
+            "/api/admin/providers",  # provider 管理 (sub-app 自管)
+            "/api/admin/backup",     # 备份 (sub-app 自管)
+            "/api/admin/metrics",    # 监控 (sub-app 自管)
+        ]
+        if (
+            sub_path == "/healthz"
+            or any(sub_path == r or sub_path.startswith(r + "/") for r in _enhanced_self_routes)
+            or any(raw_path.endswith(r) for r in _enhanced_self_routes)
+        ):
             return await call_next(request)
 
         # localhost默认暴露
@@ -54,28 +71,53 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     def _verify_token(self, token: str) -> bool:
-        """验证Bearer Token（简化版，24h有效期）。"""
+        """验证Bearer Token（兼容 auth.py 简化 token + EnhancedAuthManager PyJWT token）。
+
+        S1 (2026-08-04): D2-C WARN Step 5 根因解.
+        - 简化 token (格式 ts:sig, 旧 generate_token): 保持原行为
+        - EnhancedAuthManager PyJWT token (格式 base64.base64.base64, 拆分是 3 段):
+          委托给 enhanced_auth_manager.verify_token 验 (PyJWT 单源)
+        """
         try:
-            # token格式：timestamp:signature
             parts = token.split(":")
-            if len(parts) != 2:
-                return False
+            if len(parts) == 2:
+                # 旧版简化 token (auth.py:generate_token 签发)
+                timestamp = int(parts[0])
+                signature = parts[1]
 
-            timestamp = int(parts[0])
-            signature = parts[1]
+                if time.time() - timestamp > 86400:
+                    return False
 
-            # 检查过期（24小时）
-            if time.time() - timestamp > 86400:
-                return False
+                expected = hmac.new(
+                    self.secret_key.encode(),
+                    str(timestamp).encode(),
+                    hashlib.sha256
+                ).hexdigest()
 
-            # 验证签名
-            expected = hmac.new(
-                self.secret_key.encode(),
-                str(timestamp).encode(),
-                hashlib.sha256
-            ).hexdigest()
+                return hmac.compare_digest(signature, expected)
 
-            return hmac.compare_digest(signature, expected)
+            if len(parts) == 3 and "." not in token:
+                # 可能是 EnhancedAuthManager 的 _create_simple_token 格式 (ts:payload:sig)
+                # 让 EnhancedAuthManager 验 (单源真相, 避免 secret 漂移)
+                try:
+                    from llm_router.admin.auth_enhanced import enhanced_auth_manager
+                    from fastapi import HTTPException
+                    enhanced_auth_manager.verify_token(token)
+                    return True
+                except HTTPException:
+                    return False
+
+            # PyJWT token (3 段以 . 分隔, 形如 eyJ..)
+            if token.count(".") == 2:
+                try:
+                    from llm_router.admin.auth_enhanced import enhanced_auth_manager
+                    from fastapi import HTTPException
+                    enhanced_auth_manager.verify_token(token)
+                    return True
+                except HTTPException:
+                    return False
+
+            return False
         except (ValueError, IndexError):
             return False
 

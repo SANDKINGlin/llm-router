@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from functools import wraps
@@ -13,7 +14,11 @@ import hashlib
 logger = logging.getLogger(__name__)
 
 # JWT配置
-SECRET_KEY = "llm-router-admin-secret-key-2026"  # TODO: 移到环境变量
+# S1 (2026-08-04): 跟 auth.py AuthMiddleware 同源, 消除 D2-C WARN Step 5 双 secret 不一致
+# auth.py:22/89: secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")
+# EnhancedAuthManager.create_token/verify_token 必须用同源 secret,
+# 否则 mount 端到端鉴权失败 (AuthMiddleware 验 token 时 signature mismatch).
+SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")  # 跟 auth.py AuthMiddleware 对齐
 ALGORITHM = "HS256"
 TOKEN_EXPIRATION_HOURS = 24
 
