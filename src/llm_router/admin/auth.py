@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -12,6 +12,29 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # 简单JWT token生成（生产环境建议用python-jose）
 import hashlib
 import hmac
+
+
+# S2 (2026-08-04): X-Test-Token 旁路统一三门禁 (单源真相)
+# D7 fix (e4b974e) 在 auth.py + auth_enhanced.py 各自加 ENV flag + host 软门禁逻辑, 重复
+# 抽到本 helper, 三方调用避免漂移
+_TEST_TOKEN_HEADER = "x-test-token"
+_TEST_TOKEN_VALUE = "r8-test-token"
+_TEST_BYPASS_ENV = "LLM_ROUTER_TEST_TOKEN_BYPASS"
+_TEST_BYPASS_ALLOWED_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+
+
+def is_test_token_bypass_allowed(request: Request) -> bool:
+    """三门禁同时满足才 True (defense-in-depth):
+    1. header x-test-token == "r8-test-token"
+    2. ENV LLM_ROUTER_TEST_TOKEN_BYPASS=on (默认 off, 生产永远 off)
+    3. client host ∈ {loopback set} (防御意外远程 abuse)
+    """
+    if request.headers.get(_TEST_TOKEN_HEADER) != _TEST_TOKEN_VALUE:
+        return False
+    if os.environ.get(_TEST_BYPASS_ENV, "").lower() != "on":
+        return False
+    client_host = (request.client.host if request.client else "") or ""
+    return client_host in _TEST_BYPASS_ALLOWED_HOSTS
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -55,7 +78,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Test token bypass for integration tests
-        if request.headers.get('x-test-token') == 'r8-test-token':
+        # S2 (2026-08-04): 三门禁集中到 is_test_token_bypass_allowed helper (auth_enhanced.py 也共用)
+        if is_test_token_bypass_allowed(request):
             return await call_next(request)
 
         # 远程访问需要Bearer Token认证

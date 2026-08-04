@@ -38,6 +38,9 @@ _PROXY_ENV_KEYS = (
 def _no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in _PROXY_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    # S2 (2026-08-04): X-Test-Token 旁路 (auth.is_test_token_bypass_allowed) 需要
+    # 三门禁同时满足 (header + env + host). 单测 autouse 显式开 ENV flag, 默认 off 生产永远 off.
+    monkeypatch.setenv("LLM_ROUTER_TEST_TOKEN_BYPASS", "on")
 
 
 def _checkpoint_data_dbs() -> None:
