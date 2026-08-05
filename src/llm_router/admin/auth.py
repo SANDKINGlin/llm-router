@@ -147,6 +147,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return False
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Security headers middleware — adds standard defensive headers (R12).
+
+    Headers added to every response:
+      X-Content-Type-Options: nosniff  (prevent MIME sniffing)
+      X-Frame-Options: DENY            (prevent clickjacking)
+      Referrer-Policy: no-referrer     (don't leak Referer to third-party)
+    """
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+
 def generate_token(secret_key: str | None = None) -> str:
     """生成Bearer Token（24h有效）。"""
     key = secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .auth import AuthMiddleware, generate_token, get_audit_logger
+from .auth import AuthMiddleware, generate_token, get_audit_logger, SecurityHeadersMiddleware
 from .secrets import SecretStore, create_secret_store
 from ..config import policy
 from .providers import provider_manager, ProviderCreate, ProviderUpdate, ProviderResponse, ProviderListResponse
@@ -38,6 +38,7 @@ admin_app = FastAPI(title="LLM Router Admin API", version="0.1.0")
 
 # 添加认证中间件
 admin_app.add_middleware(AuthMiddleware)
+admin_app.add_middleware(SecurityHeadersMiddleware)
 
 # 配置模板引擎
 templates = Jinja2Templates(directory="/home/lin/projects/llm-router/src/llm_router/ui/templates")
