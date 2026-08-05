@@ -22,6 +22,7 @@ import pytest
 _PROVIDER_KEY_ENV = (
     "OPENROUTER_API_KEY", "GROQ_API_KEY", "NVIDIA_API_KEY",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MISTRAL_API_KEY",
+    "AGNES_API_KEY", "MODELSCOPE_API_KEY",
 )
 for _k in _PROVIDER_KEY_ENV:
     os.environ.pop(_k, None)

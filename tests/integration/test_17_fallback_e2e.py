@@ -427,7 +427,11 @@ def test_F09_provider_rate_limited_fallback(tmp_path, monkeypatch):
 
 def test_F10_provider_global_cooldown_fallback(tmp_path, monkeypatch):
     """F10: provider global cooldown → global_open 切。"""
-    breaker = _new_breaker(tmp_path)
+    breaker = CircuitBreaker(
+        db_path=tmp_path / "circuit.db",
+        key_hard_threshold=3,
+        known_providers={"pA", "pB"},
+    )
     monkeypatch.setattr(breaker, "_jitter_fn", lambda: 0.0)
     breaker._now_override = 1000.0
 
