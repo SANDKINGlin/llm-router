@@ -222,11 +222,8 @@
             s.src = '/static/js/chart.min.js';
             s.onload = function() { resolve(window.Chart); };
             s.onerror = function() {
-                var s2 = document.createElement('script');
-                s2.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
-                s2.onload = function() { resolve(window.Chart); };
-                s2.onerror = reject;
-                document.head.appendChild(s2);
+                // 本地 chart.min.js 缺失 → 报错 (R10 实施后本地 100% 部署, 无需 CDN fallback)
+                reject(new Error('chart.min.js not found at /static/js/'));
             };
             document.head.appendChild(s);
         });
