@@ -1,0 +1,44 @@
+task_manifest:
+  task_id: phase4-r13-mark-complete
+  date: 2026-08-05
+  branch: wt/phase4-r13-mark-complete-20260805
+  base_commit: master HEAD (06d943a)
+  parent_slice: phase4-r12-cleanup (PR #15 MERGED)
+  scope_summary: |
+    11 个 [ ] TODO 标 [x] + 写 11 个 spec 状态 — 全部 LOW 风险 (改动仅 openspec/changes/llm-router-phased/tasks.md
+    + 5 个 spec.md 补 spec). 不动 src/ 不动 tests/.
+  allowed_paths:
+    - openspec/changes/llm-router-phased/tasks.md
+    - openspec/changes/llm-router-phased/specs/p0-4-integration/spec.md
+    - openspec/changes/llm-router-phased/specs/p0-3-frontend/spec.md
+  contract_owner: hermes-v5 (orchestrator)
+  verifier: codex (R2 共识: 11A + 3B 方案)
+  user_authorization: 用户 2026-08-05 ("执行直到一方 API 额度耗尽")
+  slices_marked:
+    - 4.5 创建test_e2e_workflows.py
+    - 4.6 实现密钥管理E2E测试
+    - 4.7 实现备份恢复E2E测试
+    - 4.8 实现配置E2E测试
+    - 4.9 添加/metrics端点
+    - 4.10 配置Prometheus抓取
+    - 4.11 创建Grafana Dashboard
+    - 4.12 SQL注入测试
+    - 4.13 XSS测试
+    - 4.14 权限测试
+    - 4.15 添加健康检查端点
+  three_way_consensus:
+    R1: 
+      codex: 11A+3B (1104B 摘要)
+      hermes_v1_then_revised: 8B+6A (翻盘后 11A+3B)
+      cc: timeout
+    R2:
+      cc: PASS 3 Yes/No 全 YES (743B)
+      codex: PASS 3 Yes/No 全 YES (886B 摘要, 7236 字报告)
+      hermes: PASS 3 Yes/No 全 YES (2467B)
+    consensus: 100% 11A+3B
+  follow_up_slice:
+    slice_id: phase5-monitoring-charts
+    tasks: 3.5/3.6/3.7
+    depends_on: phase4-r13-mark-complete
+    rationale: B 类新功能切片, P126 触发三方会诊
+    plan: 起 phase5-monitoring-charts WT, 后端 + 前端 + 测试 3 层

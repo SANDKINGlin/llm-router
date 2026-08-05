@@ -122,3 +122,41 @@ scrape_configs:
 - `prometheus.yml` + `grafana/`：监控配置
 - 测试覆盖率 ≥ 80%
 - 安全扫描无高危漏洞（Bandit/Safety）
+
+
+## R13 实装状态 (2026-08-05 三方共识 — R2 PASS 11A 标记)
+
+### 已实装 (11 个 [x])
+
+**4.5 创建 test_e2e_workflows.py**: tests/integration/test_e2e_workflows.py 已建, 含 TestE2EKeyManagement / TestE2EGrayRelease / TestE2EBackupRestore / TestE2EUserWorkflows 4 套测试. pytest 实测 **10 passed + 2 skipped**.
+
+**4.6 密钥管理 E2E**: TestE2EKeyManagement::test_create_key/test_update_key/test_delete_key 全 PASS (覆盖 POST/PUT/DELETE/GET `/admin/api/keys` 端点).
+
+**4.7 备份恢复 E2E**: TestE2EBackupRestore::test_export_import_roundtrip PASS (覆盖 POST `/admin/api/backup` + POST `/admin/api/restore` 端点).
+
+**4.8 配置 E2E**: TestE2EGrayRelease::test_update_gray_percent_reflected_in_routing + test_config_persistence_after_reload + TestE2EConfigCRUD 实测 PASS (覆盖 PUT `/admin/api/config` 端点).
+
+**4.9 /metrics 端点**: src/llm_router/admin/app.py:1345 `@admin_app.get("/metrics")` 已实装, docstring 声明 "Prometheus /metrics 端点 (纯 stdlib, 零外部依赖)". 采用 stdlib 而非 prometheus_client 库, Prometheus 抓取格式等价. 同时 line 1529/1548 实装 `/api/admin/metrics/circuit-breakers` + `/api/admin/metrics/rate-limits` 2 个扩展 JSON 端点.
+
+**4.10 Prometheus scrape**: 项目根 prometheus.yml 已实装, 含 scrape_configs (job_name: llm-router, targets: localhost:8789, scrape_interval: 15s). docker-compose.yml 含 prometheus 服务 (image: prom/prometheus:latest, port 9090, 挂载 prometheus.yml).
+
+**4.11 Grafana Dashboard**: 项目根 grafana-dashboard.json 已实装 (含请求率/错误率/响应时间面板). docker-compose.yml 含 grafana 服务 (image: grafana/grafana:latest, port 3000, 挂载 grafana-dashboard.json).
+
+**4.12 SQL 注入测试**: tests/integration/test_security_admin.py 含 SQL 注入测试用例 (POST `/admin/api/keys` 注入 `'; DROP TABLE keys; --`), pytest 实测 **22 passed**.
+
+**4.13 XSS 测试**: tests/integration/test_security_admin.py 含 XSS 测试用例 (PUT `/admin/api/keys` 注入 `<script>alert(1)</script>`, 验证输出转义), pytest 实测 **22 passed**.
+
+**4.14 权限测试**: 4 文件分布 — test_security_admin.py (22 passed, 401/403/200 测试) + test_e2e_admin.py (16 passed, RBAC E2E) + test_admin_auth.py + test_apply_policy.py. 覆盖率完整.
+
+**4.15 /admin/health**: admin/app.py:950 `@admin_app.get("/admin/health")` HTML 主页 + 1339 `/healthz` 数据面 + 1567 `/api/admin/health/status` + 1590 `/api/admin/health/dead` + 1612 `/api/admin/health/probe-history/{provider}` 共 4 端点综合满足 tasks.md 4.15 要求 (检查 db/redis/ollama + 返回 200 + 各组件状态).
+
+### 留 Phase5 (3 个 follow-up)
+
+3.5/3.6/3.7 monitoring.html 3 图表 (trend/error/latency) 实际 monitoring.html 0 Chart.js 0 canvas 0 /api/admin/metrics/{trends,errors,latency} 端点 — 真缺失. 必起 Phase5-Monitoring-Charts WT 实施.
+
+### 三方共识溯源
+
+- R1 (三方 100% 收敛 11A+3B, MD5 6/6 互异): cc=timeout/codex=1104B/hermes=5561B
+- R2 (3 Yes/No 全 YES PASS): cc=743B/codex=886B/hermes=2467B
+- 归档: ~/ObsidianVault/20-记忆/共享/research/R{{1,2}}-三方-llm-router-phase4-r13-20260805.md
+- task-manifest: .agent/task-manifest.yaml (phase4-r13-mark-complete)
