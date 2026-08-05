@@ -1863,7 +1863,7 @@ async def get_metrics_trends():
     try:
         conn = sqlite3.connect(str(trace_path))
         cur = conn.execute(
-            "SELECT ts FROM trace_hot WHERE ts >= ?",
+            "SELECT created_at FROM trace_hot WHERE created_at >= ?",
             (cutoff,),
         )
         rows = cur.fetchall()
@@ -1915,18 +1915,19 @@ async def get_metrics_errors():
     try:
         conn = sqlite3.connect(str(trace_path))
         cur = conn.execute(
-            "SELECT provider, status, COUNT(*) FROM trace_hot WHERE ts >= ? GROUP BY provider, status",
+            "SELECT provider, result, COUNT(*) FROM trace_hot WHERE created_at >= ? GROUP BY provider, result",
             (cutoff,),
         )
         rows = cur.fetchall()
         conn.close()
 
         per_provider = {}
-        for provider, status, count in rows:
+        for provider, result, count in rows:
             if provider not in per_provider:
                 per_provider[provider] = {"total": 0, "errors": 0}
             per_provider[provider]["total"] += count
-            if status and status >= 400:
+            # result 字段: 'success' / 'error' / 'rate_limited' 等字符串
+            if result and result != "success":
                 per_provider[provider]["errors"] += count
 
         errors = []
@@ -1975,7 +1976,7 @@ async def get_metrics_latency():
     try:
         conn = sqlite3.connect(str(trace_path))
         cur = conn.execute(
-            "SELECT ts, latency_ms FROM trace_hot WHERE ts >= ? AND latency_ms IS NOT NULL",
+            "SELECT created_at, latency FROM trace_hot WHERE created_at >= ? AND latency IS NOT NULL",
             (cutoff,),
         )
         rows = cur.fetchall()
