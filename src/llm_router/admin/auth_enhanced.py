@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from functools import wraps
@@ -10,10 +11,17 @@ from fastapi import HTTPException, Request
 import sqlite3
 import hashlib
 
+# S2 (2026-08-04): X-Test-Token 旁路三门禁共用 helper (跟 auth.py 同源)
+from llm_router.admin.auth import is_test_token_bypass_allowed
+
 logger = logging.getLogger(__name__)
 
 # JWT配置
-SECRET_KEY = "llm-router-admin-secret-key-2026"  # TODO: 移到环境变量
+# S1 (2026-08-04): 跟 auth.py AuthMiddleware 同源, 消除 D2-C WARN Step 5 双 secret 不一致
+# auth.py:22/89: secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")
+# EnhancedAuthManager.create_token/verify_token 必须用同源 secret,
+# 否则 mount 端到端鉴权失败 (AuthMiddleware 验 token 时 signature mismatch).
+SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")  # 跟 auth.py AuthMiddleware 对齐
 ALGORITHM = "HS256"
 TOKEN_EXPIRATION_HOURS = 24
 
@@ -256,7 +264,20 @@ enhanced_auth_manager = EnhancedAuthManager()
 
 
 def get_current_user_enhanced(request: Request) -> Optional[Dict[str, Any]]:
-    """从请求中获取当前用户信息。"""
+    """从请求中获取当前用户信息。
+
+    S2 (2026-08-04): X-Test-Token 旁路统一到 auth.is_test_token_bypass_allowed helper
+    (跟 auth.py AuthMiddleware 同源, 单源真相). 硬门禁 ENV + 软门禁 host 同时满足才放行.
+    """
+    # X-Test-Token 旁路 (D7 · 跟 AuthMiddleware 对齐 + 安全门禁) — S2 抽 helper 集中
+    if is_test_token_bypass_allowed(request):
+        return {
+            "id": 0,
+            "username": "r8-test",
+            "role": "admin",
+            "permissions": ["admin", "view", "manage_keys", "rollback", "backup"]
+        }
+
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return None

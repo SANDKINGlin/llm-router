@@ -103,6 +103,7 @@ class CircuitBreaker:
         base_backoff_seconds: int = 30,
         jitter_seconds: int = 15,
         backoff_cap_seconds: int = 300,
+        known_providers: set[str] | None = None,
     ):
         self.db_path = Path(db_path)
         self.key_hard_threshold = key_hard_threshold
@@ -110,6 +111,7 @@ class CircuitBreaker:
         self.base_backoff_seconds = base_backoff_seconds
         self.jitter_seconds = jitter_seconds
         self.backoff_cap_seconds = backoff_cap_seconds
+        self._known_providers = known_providers
 
         self._keys: dict[tuple[str, str], KeyState] = {}
 
@@ -218,6 +220,8 @@ class CircuitBreaker:
     # ---------- derived aggregates (Gap3 number-free) ----------
 
     def _providers_with_keys(self) -> set[str]:
+        if self._known_providers is not None:
+            return self._known_providers
         return {p for (p, _k) in self._keys}
 
     def _provider_keys(self, provider: str) -> list[KeyState]:

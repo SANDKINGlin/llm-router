@@ -1,0 +1,43 @@
+task_id: s2-x-test-token-env-helper-20260804
+date: 2026-08-04
+owner_agent: hermes  # 主会话, D11.1 precedent 边界内 (helper 抽 = 已有共识 + 边界明确), 单方 + 真验
+worktree_path: /home/lin/projects/llm-router-wt-s1-d2c-secret
+branch: wt/s2-x-test-token-env-helper-20260804
+parent_commit: 406ab5f  # S1 commit
+base_commit: 5c8eea3
+
+allowed_paths:
+  - src/llm_router/admin/auth.py           # helper 抽 + AuthMiddleware 调用
+  - src/llm_router/admin/auth_enhanced.py  # get_current_user_enhanced 调用 helper
+  - tests/conftest.py                      # autouse ENV (跟 D7 fix e4b974e 对齐)
+  - tests/unit/test_x_test_token_bypass.py # 新增 11 个 helper 单测
+  - .agent/task-manifest-s2-xtt-env-helper.yaml
+  - .harness/evidence/s2-xtt-env-helper.json
+
+forbidden_paths:
+  - src/llm_router/router/
+  - src/llm_router/api/
+  - src/llm_router/store/
+  - mnfst/providers.yaml
+  - router-policy.yaml
+  - router-policy.runtime.yaml
+  - pyproject.toml
+  - tests/integration/**
+  - tests/e2e/
+
+rationale: |
+  D7 总归档留 P+ 第 3 条: "X-Test-Token 无条件 admin bypass: 后续切片应 ENV flag 化".
+  D7 fix e4b974e 已 partial 解: auth.py + auth_enhanced.py 各自加 ENV flag + host 软门禁.
+  本切片抽 helper, 避免两处代码漂移 (单源真相, DRY).
+
+expected_signal_summary: |
+  S2 PASS:
+  - helper 单测: 11 passed (含正反 + remote-host 软门禁拦截)
+  - pytest tests/unit: 654 passed (baseline 643 + 11 新增)
+  - pytest tests/integration: 8 + 12 = 20 passed (跟 S1 baseline 一致)
+  - pytest medium: 740 passed, 2 failed (pre-existing F10 + phase1), 4 skipped
+  - verify_d2c_mount_testclient.py: 6/6 PASS RC=0 (跟 S1 一致)
+
+threeway_required: false  # D11.1 precedent 边界内
+
+evidence_path: .harness/evidence/s2-xtt-env-helper.json

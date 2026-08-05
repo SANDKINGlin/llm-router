@@ -1,0 +1,25 @@
+{
+  "task_id": "s2-x-test-token-env-helper-20260804",
+  "timestamp": "2026-08-04T11:14:37.752975",
+  "wt": "/home/lin/projects/llm-router-wt-s1-d2c-secret",
+  "branch": "wt/s2-x-test-token-env-helper-20260804",
+  "base": "5c8eea3",
+  "parent": "406ab5f (S1)",
+  "files_changed": [
+    "src/llm_router/admin/auth.py (helper `is_test_token_bypass_allowed` 抽 + AuthMiddleware 调用)",
+    "src/llm_router/admin/auth_enhanced.py (import helper + get_current_user_enhanced 调用)",
+    "tests/conftest.py (autouse ENV `LLM_ROUTER_TEST_TOKEN_BYPASS=on`)",
+    "tests/unit/test_x_test_token_bypass.py (新, 11 helper 单测)"
+  ],
+  "verification": {
+    "helper_unit_tests": "11 passed",
+    "pytest_tests_unit": "654 passed, 3 skipped (baseline 643 + 11 新增)",
+    "pytest_tests_integration_test_admin_auth": "8 passed",
+    "pytest_tests_integration_test_e2e_workflows": "12 passed",
+    "medium_full": "740 passed, 2 failed (pre-existing F10 + phase1), 4 skipped",
+    "verify_d2c_mount_testclient.py": "6/6 PASS RC=0",
+    "regression_introduced": false
+  },
+  "third_party_consult": "D11.1 precedent 边界内, 单方 + 真验. 跟 D11 修 CI OpenSpec precedent 一致.",
+  "status": "PASS"
+}

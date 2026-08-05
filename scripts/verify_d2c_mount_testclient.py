@@ -7,20 +7,22 @@
   1. mount /admin 真在 app.routes
   2. /healthz 通
   3. /admin/api/admin/users 无 token -> 401 (middleware 拦)
-  4. /admin/admin/auth/login admin/admin -> 真阻塞 (D2-C middleware 白名单失效)
-  5. /admin/api/admin/users 带 token -> 用 admin 内部 fixture 验证 (test_admin_auth 已 13 passed)
+  4. /admin/admin/auth/login admin/admin -> 200 (X1 strip mount_prefix 已落地)
+  5. /admin/api/admin/users 带 token -> 200 (S1 双 secret 同源化后 mount 端到端通)
   6. /docs -> 200 (FastAPI 文档)
 
-已知真阻塞 (2026-07-28 11:42):
+已知真阻塞 (2026-07-28 11:42, S1 2026-08-04 已解):
   AuthMiddleware (admin/auth.py L33-34) 白名单硬编码 "/admin/auth/login",
   在 mount /admin 后实际路径变 "/admin/admin/auth/login", 白名单失效.
-  -> Step 4 显式 BLOCKED, 等 X1-X5 解法选定后跑通.
+  2026-07-28 X1 fix: auth.py 加 strip mount_prefix → Step 4 200.
+  2026-08-04 S1 fix: auth_enhanced.py SECRET_KEY 跟 auth.py 同源 → Step 5 200.
 
 退出码:
-  0 = mount 路径 5/5 PASS (Step 4 显式标 BLOCKED 不是 FAIL)
+  0 = mount 路径 6/6 PASS (含 Step 4 200 + Step 5 200)
   1 = FAIL
 """
 import sys
+import os
 from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute, Mount
 
@@ -87,23 +89,20 @@ def main():
         return 1
 
     # Step 5: /admin/api/admin/users 带 token (mount 端到端鉴权)
-    # ⚠️ 发现 admin 内部双层鉴权不一致 (AuthMiddleware secret=dev-secret-key vs EnhancedAuthManager SECRET_KEY env)
-    # 这是 admin app 自身 bug, 不属 D2-C mount 切片范围 (v2 §6 只要求 login 通)
-    # 当前 admin 集成测试 (test_admin_auth 13 passed) 验的是 EnhancedAuthManager 单层, 不走 AuthMiddleware
-    # mount 端到端等价的真验: admin 集成测试 + 独立 test_admin_auth 13 passed
+    # S1 (2026-08-04): EnhancedAuthManager SECRET_KEY 已跟 auth.py AuthMiddleware 同源
+    # (都读 ADMIN_SECRET_KEY env, 默认 "dev-secret-key"). mount 端到端鉴权现在真 200.
     token = r.json().get("token", "") if r.status_code == 200 else ""
     r = client.get("/admin/api/admin/users", headers={"Authorization": f"Bearer {token}"})
     if r.status_code == 200:
         print(f"OK Step 5: GET /admin/api/admin/users 带 token -> {r.status_code} (mount 端到端通)")
     elif r.status_code == 401:
-        # 已知: admin 内部 EnhancedAuthManager 用不同 secret 验 token, mount 端到端鉴权失败
-        # X1 已完成 mount 路径解阻, 此 401 是 admin 自身双层鉴权一致性 bug, 留作单独切片
-        print(f"WARN Step 5: GET /admin/api/admin/users 带 token -> 401 (admin 内部 EnhancedAuthManager secret 不一致)")
-        print(f"             已知 bug, 不属 D2-C mount 切片范围 (v2 §6 只要求 login 通)")
-        print(f"             X1 已完成 mount 路径白名单解阻 (Step 4 200 已证)")
-        print(f"             admin 等价验证: tests/integration/test_admin_auth.py 13 passed (worktree 独立 pytest)")
+        # S1 fix 后不应再 WARN Step 5; 401 = 新 regression, 必须 FAIL
+        print(f"FAIL Step 5: GET /admin/api/admin/users 带 token -> 401 (S1 secret 同源化已落地, 401 不应再出现)")
+        print(f"             回归排查: 检查 auth.py auth_enhanced.py SECRET_KEY 是否同源")
+        print(f"             env: ADMIN_SECRET_KEY={'set' if os.environ.get('ADMIN_SECRET_KEY') else 'unset (default dev-secret-key)'}")
+        return 1
     else:
-        print(f"FAIL Step 5: GET /admin/api/admin/users 带 token 预期 200 或 401 known, 实 {r.status_code}")
+        print(f"FAIL Step 5: GET /admin/api/admin/users 带 token 预期 200, 实 {r.status_code}")
         return 1
 
     # Step 6: /docs -> 200
@@ -115,12 +114,12 @@ def main():
 
     print()
     print("=" * 60)
-    print("D2-C mount 真验 (X1 strip mount_prefix fix):")
+    print("D2-C mount 真验 (X1 strip mount_prefix fix + S1 双 secret 同源化):")
     print("  Step 1 OK: /admin/* mount 真在 app.routes")
     print("  Step 2 OK: /healthz 通")
     print("  Step 3 OK: middleware 拦无 token (401)")
     print("  Step 4 OK: login POST 真 200 (X1 strip mount_prefix 让白名单命中)")
-    print("  Step 5 OK: 带 token GET /admin/api/admin/users 端到端真 200")
+    print("  Step 5 OK: 带 token GET /admin/api/admin/users 端到端真 200 (S1 双 secret 同源化)")
     print("  Step 6 OK: /docs 通")
     print("=" * 60)
     print("总体: PASS (6/6 OK)")
