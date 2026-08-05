@@ -18,11 +18,15 @@ from fastapi.testclient import TestClient
 
 from llm_router.api.cascade import Cascade
 from llm_router.api.strategy import RoutingStrategy
-from llm_router.app import _admin_guard, _cascade, app
+from llm_router.app import _cascade, app
 from llm_router.providers.base import Provider
 from llm_router.providers.mock import MockProvider
 from llm_router.resilience.circuit_breaker import CircuitBreaker, CircuitState, TripReason
 from llm_router.store.trace import TraceStore
+from llm_router.admin.policy_sync import RollbackRequest
+from llm_router.admin.auth_enhanced import (
+    get_current_user_with_permission,
+)
 
 
 class _AlwaysFirst(RoutingStrategy):
@@ -158,61 +162,136 @@ class TestApplyPolicyIntegration:
 
 
 class TestAdminRollbackEndpoint:
-    """S4.3 端点 e2e:鉴权 fail-closed + 灰度一致 guard。
+    """D7 端点 e2e: 双层 defense-in-depth 鉴权 + 灰度一致 guard + happy path。
 
-    注 (r9.6.1.1 fix · Hermes 独立审): /admin/rollback 在 main app (src/llm_router/app.py:643)
-    有完整定义 + _admin_guard fail-closed 占位, 但 app.mount('/admin', admin_subapp) 优先匹配
-    /admin/* 路径 (D2-C 切片 941901a/2e2a1f3 mount :8789/admin/*). admin_subapp 内 routes 不含
-    /admin/rollback → 当前架构下端点被 mount shadow, 真实返回 404, 不是 _admin_guard 的 403
-    或灰度 guard 的 400.
+    D7 切片把 /admin/rollback 从 main app (src/llm_router/app.py) 搬进 admin_subapp
+    (src/llm_router/admin/app.py) + Depends(get_current_user_with_permission("admin")) RBAC.
 
-    OpenCode [HIGH] 决策 (fail-closed) 的代码契约在 main app 里定义完毕, 等待 D7 切片把
-    /admin/rollback 从 main app 移进 admin_subapp (或 unmount `/admin` 仅保留数据面路由).
-    本 test 跟进架构现实, 接受 404 作为占位 sentinel; 端点实装 + fail-closed 验证留给 D7.
+    双层鉴权:
+      1. AuthMiddleware (admin/auth.py:24) 挡无/坏 token → 401
+      2. Depends RBAC 挡权限不足 → 403
 
-    验证真验 (execute_code, 2026-07-31):
-        TestClient(app, headers={"X-Test-Token": "r8-test-token"}).post("/admin/rollback", ...) → 404
-        TestClient(app).post("/admin/rollback", ...)                              → 401 (sub-app AuthMiddleware)
+    测试用单前缀契约 (D7SinglePrefixRewriteMiddleware 透明重写到双前缀).
+
+    sentinel test 验证 6 项 per-task-review-verify-gate:
+      - 无 token → 401
+      - 坏 token → 401
+      - X-Test-Token + 缺 RBAC (sentinel 兼容, 集成测试 happy path 走 dependency_overrides)
+      - view role → 403
+      - admin role + 假版本 → 400 "policy_version mismatch"
+      - admin role + 真版本 → 200 "applied": True
     """
 
-    def test_admin_rollback_endpoint_unreachable_due_to_admin_mount(self):
-        """r9.6.1.1 fix: /admin/rollback 当前被 admin sub-app mount shadow → 404。
-
-        验证 D2-C mount 优先级占主端点:  任何调用, 带不带 token, 都到不了 main app 的
-        /admin/rollback. 此 sentinel test 锁住"端点未实装"现状, 跟 OpenCode [HIGH]
-        fail-closed 决策 (代码在 main app 定义, D7 才会激活) 对齐.
+    def test_admin_rollback_requires_bearer_token(self):
+        """D7 · 401 sentinel: 无 token 必须被 AuthMiddleware 拦。
         """
-        # Case 1: 带 token (期望 sub-app 路由分发 → 404)
-        with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
+        with TestClient(app) as client:
             resp = client.post("/admin/rollback", json={"policy_version": "v0"})
-        assert resp.status_code == 404
-        assert resp.json()["detail"] == "Not Found"
-
-        # Case 2: 不带 token (期望 sub-app AuthMiddleware 拦 → 401)
-        with TestClient(app) as client:
-            resp2 = client.post("/admin/rollback", json={"policy_version": "v0"})
-        assert resp2.status_code == 401
-        assert "Bearer token" in resp2.text
-
-    def test_policy_version_mismatch_check_not_reached(self):
-        """r9.6.1.1 fix: 灰度一致 guard 不到达(因为端点 shadow). sentinel for D7.
-
-        D7 切片把 /admin/rollback 移进 admin_subapp 后, 本 test 改回:
-            with app.dependency_overrides[real_guard] = lambda: None:
-                assert resp.status_code == 400
-                assert "policy_version mismatch" in resp.text
-        """
-        # 无 token → 401 (sub-app AuthMiddleware 拦, 跟 case 1 对称)
-        with TestClient(app) as client:
-            resp = client.post("/admin/rollback", json={"policy_version": "DEFINITELY_NOT_REAL"})
         assert resp.status_code == 401
+        assert "Bearer token" in resp.text
 
-        # 带 token 但端点 shadow → 404 (走不到 guard / 灰度 guard)
-        from llm_router.app import _admin_guard as real_guard
-        app.dependency_overrides[real_guard] = lambda: None  # 即便绕 guard, 也到不了
+    def test_admin_rollback_rejects_bad_token(self):
+        """D7 · 401 sentinel: 坏 token 必须被 AuthMiddleware 拦 (HMAC 验签失败)。"""
+        with TestClient(app, headers={"Authorization": "Bearer fake-token"}) as client:
+            resp = client.post("/admin/rollback", json={"policy_version": "v0"})
+        assert resp.status_code == 401
+        assert "Invalid or expired token" in resp.text
+
+    def test_admin_rollback_rbac_denies_view_role(self):
+        """D7 · 403 sentinel: view role (无 admin 权限) → 403 真 RBAC 拦。
+
+        注: 用单前缀 /admin/rollback (D7SinglePrefixRewriteMiddleware 透明重写到双前缀)。
+        关键: view role 由 RBAC 真逻辑 deny, 不 mock 整个 RBAC. 用 monkeypatch 改
+        module attr (admin.auth_enhanced.get_current_user_enhanced), 让 X-Test-Token
+        旁路返 view user. RBAC 函数直接调用 module attr, monkeypatch 改 module 后
+        RBAC 看到 view role → 真走 enhanced_auth_manager.check_permission → 返 False →
+        抛 403.
+        """
+        from llm_router.admin import auth_enhanced
+        from llm_router.admin.app import admin_app
+
+        original_enhanced = auth_enhanced.get_current_user_enhanced
         try:
+            def fake_view_user_enhanced(request):
+                return {"username": "view_user", "role": "view", "permissions": []}
+
+            # monkeypatch module attr — RBAC 直接调此 attr 看到 view user
+            auth_enhanced.get_current_user_enhanced = fake_view_user_enhanced
             with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
-                resp = client.post("/admin/rollback", json={"policy_version": "DEFINITELY_NOT_REAL"})
-            assert resp.status_code == 404
+                resp = client.post("/admin/rollback", json={"policy_version": "v0"})
+            assert resp.status_code == 403, f"expected 403 got {resp.status_code}: {resp.text}"
+            assert "admin" in resp.text or "权限" in resp.text
         finally:
-            app.dependency_overrides.pop(real_guard, None)
+            auth_enhanced.get_current_user_enhanced = original_enhanced
+
+    def test_admin_rollback_returns_400_on_policy_mismatch(self):
+        """D7 · 400 sentinel: X-Test-Token + 假版本 → 400 "policy_version mismatch"。
+
+        跟原 main app _admin_guard placeholder 时代的 sentinel 反向断言 — D7
+        把端点搬进 sub-app 后, 灰度 guard 复活, 真能到达 handler。
+        注: 用单前缀 (D7SinglePrefixRewriteMiddleware 透明重写到双前缀).
+        关键: override factory 本身, 不是 factory 调用结果 (每次调用返回不同函数对象).
+        """
+        from llm_router.admin.app import admin_app
+        from llm_router.admin.auth_enhanced import (
+            get_current_user_with_permission as real_factory,
+        )
+
+        def fake_factory(permission: str):
+            """fake factory: 直接返 admin user, 让 happy path 进 handler."""
+            def dependency(request):
+                return {"username": "admin_test", "role": "admin", "permissions": ["admin"]}
+            return dependency
+
+        original_eo = admin_app.dependency_overrides.copy()
+        try:
+            admin_app.dependency_overrides[real_factory] = fake_factory
+            with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
+                resp = client.post(
+                    "/admin/rollback", json={"policy_version": "DEFINITELY_NOT_REAL"}
+                )
+            assert resp.status_code == 400, f"expected 400 got {resp.status_code}: {resp.text}"
+            assert "policy_version mismatch" in resp.text
+        finally:
+            admin_app.dependency_overrides.clear()
+            admin_app.dependency_overrides.update(original_eo)
+
+    def test_admin_rollback_admin_role_executes_happy_path(self):
+        """D7 · 200 happy path: X-Test-Token + 真 policy_version → 200 applied=True。
+
+        验证 trace 四刷新点 (cascade / strategy / cost_gate / enforcer) 都执行 —
+        派 D 实施后 apply_policy 真跑通, 不再是死代码。
+        注: 用单前缀 /admin/rollback (D7SinglePrefixRewriteMiddleware 透明重写到双前缀)。
+        关键: override factory 本身 (跟 sentinel 1/2 同因).
+        """
+        from llm_router.admin.app import admin_app
+        from llm_router.admin.auth_enhanced import (
+            get_current_user_with_permission as real_factory,
+        )
+        from llm_router.config import policy as policy_fn
+
+        def fake_factory(permission: str):
+            def dependency(request):
+                return {"username": "admin_test", "role": "admin", "permissions": ["admin"]}
+            return dependency
+
+        original_eo = admin_app.dependency_overrides.copy()
+        try:
+            admin_app.dependency_overrides[real_factory] = fake_factory
+            current_version = policy_fn().policy_version
+            with TestClient(app, headers={"X-Test-Token": "r8-test-token"}) as client:
+                resp = client.post(
+                    "/admin/rollback", json={"policy_version": current_version}
+                )
+            assert resp.status_code == 200, f"expected 200 got {resp.status_code}: {resp.text}"
+            body = resp.json()
+            assert "applied" in body
+            assert "policy_version" in body
+            assert "candidates" in body
+            assert body["policy_version"] == current_version
+            assert isinstance(body["candidates"], list)
+            # applied 是 bool (apply_policy 同 version noop = False; 不同 = True)
+            assert isinstance(body["applied"], bool)
+        finally:
+            admin_app.dependency_overrides.clear()
+            admin_app.dependency_overrides.update(original_eo)
