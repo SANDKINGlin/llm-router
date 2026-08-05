@@ -152,6 +152,7 @@ class TestE2EBackupRestore:
         # 步骤4：验证恢复后配置一致
         # （实际需要验证密钥、配置、数据全部恢复）
 
+    @pytest.mark.skip(reason="Covered by test_e2e_admin.py::TestBackupRestore")
     def test_database_sizes_growth_detection(self):
         """测试数据库大小监控。"""
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
@@ -195,6 +196,7 @@ class TestE2EObservationAccuracy:
         # 步骤3：触发真实熔断→验证监控更新
         # （这里简化，实际需要真实provider和熔断场景）
 
+    @pytest.mark.skip(reason="Covered by test_e2e_admin.py::TestPermissionBoundary")
     def test_health_status_accuracy(self):
         """测试健康状态准确反映探活结果。"""
         client = TestClient(admin_app, headers={"X-Test-Token": "r8-test-token"})
