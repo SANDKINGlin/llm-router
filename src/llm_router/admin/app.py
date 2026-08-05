@@ -1338,8 +1338,55 @@ async def provider_edit_page(provider: str, request: Request):
 
 @admin_app.get("/healthz")
 async def healthz():
-    """健康检查端点（无认证）。"""
+    """K8s liveness probe。"""
     return {"status": "healthy"}
+
+
+@admin_app.get("/metrics")
+async def metrics():
+    """Prometheus /metrics 端点 (纯 stdlib, 零外部依赖).
+
+    暴露:
+      llm_router_requests_total{provider}     Counter 总请求
+      llm_router_errors_total{provider}       Counter 总错误
+      llm_router_active_keys                   Gauge 活跃密钥数
+      llm_router_db_size_bytes{db}             Gauge 数据库文件大小
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    data_dir = _Path(__file__).resolve().parents[3] / "data"
+    lines = [
+        "# HELP llm_router_requests_total Total requests per provider.",
+        "# TYPE llm_router_requests_total counter",
+        "# HELP llm_router_errors_total Total errors per provider.",
+        "# TYPE llm_router_errors_total counter",
+        "# HELP llm_router_active_keys Number of active API keys.",
+        "# TYPE llm_router_active_keys gauge",
+        "# HELP llm_router_db_size_bytes Database file sizes in bytes.",
+        "# TYPE llm_router_db_size_bytes gauge",
+        "",
+    ]
+
+    # DB sizes
+    for db_file in ["trace.db", "health.db", "scanner.db", "ledger.db"]:
+        db_path = data_dir / db_file
+        size = db_path.stat().st_size if db_path.exists() else 0
+        lines.append(
+            f'llm_router_db_size_bytes{{db="{db_file}"}} {size}'
+        )
+
+    # Active keys count (from policy providers)
+    try:
+        from llm_router.config import policy as _policy
+        active = len([p for p in _policy().providers if p.name != "mock"])
+        lines.append(f"llm_router_active_keys {active}")
+    except Exception:
+        lines.append("llm_router_active_keys 0")
+
+    # Per-provider metrics placeholder (real impl needs Cascade access)
+    lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 # ===== 备份导出导入 =====

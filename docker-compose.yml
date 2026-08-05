@@ -17,3 +17,34 @@ services:
       - .env                 # keys(GROQ_API_KEY / NVIDIA_API_KEY 等);.env 已 gitignore
     restart: unless-stopped
 # 管理面 :8790 依赖 add-admin-webui change,届时在此加第二个 service 或端口。
+
+  # ── Prometheus + Grafana (Phase3 监控) ──
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/llm-router.json:ro
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
