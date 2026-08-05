@@ -1565,7 +1565,7 @@ def _get_health_store():
 
 
 @admin_app.get("/api/admin/health/status")
-async def get_health_status():
+async def get_health_status(current_user: dict = Depends(get_current_user_auth)):
     """获取所有provider健康状态 (2.9 — 接 HealthStore 真数据)."""
     store = _get_health_store()
     await store.init()
@@ -1588,7 +1588,7 @@ async def get_health_status():
 
 
 @admin_app.get("/api/admin/health/dead")
-async def get_dead_providers():
+async def get_dead_providers(current_user: dict = Depends(get_current_user_auth)):
     """获取死亡 provider 列表 (2.9)."""
     store = _get_health_store()
     await store.init()
@@ -1610,7 +1610,7 @@ async def get_dead_providers():
 
 
 @admin_app.get("/api/admin/health/probe-history/{provider}")
-async def get_probe_history(provider: str):
+async def get_probe_history(provider: str, current_user: dict = Depends(get_current_user_auth)):
     """获取单个 provider 24h 探活历史 (2.9)."""
     store = _get_health_store()
     await store.init()

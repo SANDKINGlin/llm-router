@@ -64,6 +64,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/admin/providers",  # provider 管理 (sub-app 自管)
             "/api/admin/backup",     # 备份 (sub-app 自管)
             "/api/admin/metrics",    # 监控 (sub-app 自管)
+            "/metrics",              # Prometheus scrape (mount 后 /admin/metrics → 子应用 /metrics)
         ]
         if (
             sub_path == "/healthz"
