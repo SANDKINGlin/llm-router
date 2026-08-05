@@ -183,5 +183,148 @@
     background-color: #ffc107;
 }
 </style>
+
+
+<!-- Phase5 监控图表 (3.5/3.6/3.7) -->
+<div class="monitor-section">
+    <h2>实时监控图表</h2>
+
+    <!-- 3.5 请求量趋势图 -->
+    <div class="chart-container" style="margin: 20px 0;">
+        <h3 style="font-size: 14px; color: #555;">24h 请求量趋势</h3>
+        <canvas id="chart-trends" width="800" height="200"></canvas>
+        <p class="chart-meta" id="trends-meta" style="color: #666; margin: 5px 0;">加载中...</p>
+    </div>
+
+    <!-- 3.6 错误率分布图 -->
+    <div class="chart-container" style="margin: 20px 0;">
+        <h3 style="font-size: 14px; color: #555;">Provider 错误率分布</h3>
+        <canvas id="chart-errors" width="800" height="200"></canvas>
+        <p class="chart-meta" id="errors-meta" style="color: #666; margin: 5px 0;">加载中...</p>
+    </div>
+
+    <!-- 3.7 响应时间热图 -->
+    <div class="chart-container" style="margin: 20px 0;">
+        <h3 style="font-size: 14px; color: #555;">24h 响应时间热图 (p95 ms)</h3>
+        <canvas id="chart-latency" width="800" height="200"></canvas>
+        <p class="chart-meta" id="latency-meta" style="color: #666; margin: 5px 0;">加载中...</p>
+    </div>
+</div>
+
+<script>
+// Phase5 Chart.js 配置 (3.5/3.6/3.7 monitoring charts)
+// R4 三方 Q2=B 选本地 /static/js/chart.min.js, CDN fallback 仅作离线 degradation
+(function() {
+    function loadChartJS() {
+        return new Promise(function(resolve, reject) {
+            if (window.Chart) return resolve(window.Chart);
+            var s = document.createElement('script');
+            s.src = '/static/js/chart.min.js';
+            s.onload = function() { resolve(window.Chart); };
+            s.onerror = function() {
+                var s2 = document.createElement('script');
+                s2.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+                s2.onload = function() { resolve(window.Chart); };
+                s2.onerror = reject;
+                document.head.appendChild(s2);
+            };
+            document.head.appendChild(s);
+        });
+    }
+
+    loadChartJS().then(function(Chart) {
+        // 3.5 趋势图 (line)
+        fetch('/api/admin/metrics/trends').then(function(r) { return r.json(); }).then(function(data) {
+            var ctx = document.getElementById('chart-trends').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.trends.map(function(t, i) {
+                        var h = (new Date().getHours() - (23 - i) + 24) % 24;
+                        return h + ':00';
+                    }),
+                    datasets: [{
+                        label: '请求数',
+                        data: data.trends.map(function(t) { return t.count; }),
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        fill: true,
+                        tension: 0.3,
+                    }]
+                },
+                options: { responsive: true }
+            });
+            document.getElementById('trends-meta').textContent =
+                '24h 总请求 ' + data.total_24h + ' (来源: ' + data.data_source + ')';
+        });
+
+        // 3.6 错误率柱状图
+        fetch('/api/admin/metrics/errors').then(function(r) { return r.json(); }).then(function(data) {
+            var ctx = document.getElementById('chart-errors').getContext('2d');
+            var errors = data.errors;
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: errors.map(function(e) { return e.provider; }),
+                    datasets: [{
+                        label: '错误率 (%)',
+                        data: errors.map(function(e) { return parseFloat((e.error_rate * 100).toFixed(2)); }),
+                        backgroundColor: errors.map(function(e) {
+                            return e.error_rate > 0.05 ? 'rgba(255, 99, 132, 0.7)' : 'rgba(54, 162, 235, 0.7)';
+                        }),
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: { y: { beginAtZero: true, ticks: { callback: function(v) { return v + '%'; } } } }
+                }
+            });
+            document.getElementById('errors-meta').textContent =
+                errors.length + ' providers (来源: ' + data.data_source + ')';
+        });
+
+        // 3.7 响应时间热图 (bubble 模拟)
+        fetch('/api/admin/metrics/latency').then(function(r) { return r.json(); }).then(function(data) {
+            var ctx = document.getElementById('chart-latency').getContext('2d');
+            var cells = data.latency;
+            var points = cells.map(function(c) {
+                var color = c.p95_ms < 200 ? 'rgba(75, 192, 75, 0.7)' :
+                            c.p95_ms < 500 ? 'rgba(255, 205, 86, 0.7)' :
+                                              'rgba(255, 99, 132, 0.7)';
+                return {
+                    x: c.bucket + 0.3,
+                    y: c.hour + 0.3,
+                    r: 8,
+                    backgroundColor: color,
+                };
+            });
+            new Chart(ctx, {
+                type: 'bubble',
+                data: {
+                    datasets: [{
+                        label: 'p95 (ms)',
+                        data: points,
+                        backgroundColor: points.map(function(p) { return p.backgroundColor; }),
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: { min: 0, max: 8, title: { display: true, text: '时段 (3h/段)' } },
+                        y: { min: 0, max: 24, reverse: true, title: { display: true, text: '小时前' } },
+                    }
+                }
+            });
+            document.getElementById('latency-meta').textContent =
+                cells.length + ' cells (来源: ' + data.data_source + ')';
+        });
+    }).catch(function(err) {
+        document.querySelectorAll('.chart-meta').forEach(function(el) {
+            el.textContent = 'Chart.js 加载失败: ' + err.message;
+        });
+    });
+})();
+</script>
 </body>
 </html>
