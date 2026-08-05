@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>健康监控 - LLM Router Admin</title>
+    <script src="/static/js/htmx.min.js"></script>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">LLM Router Admin</div>
+            <div class="nav-links">
+                <a href="/admin/" class="nav-link">Dashboard</a>
+                <a href="/admin/keys" class="nav-link">密钥管理</a>
+                <a href="/admin/monitoring" class="nav-link">监控</a>
+                <a href="/admin/health" class="nav-link active">健康</a>
+                <a href="/admin/settings" class="nav-link">设置</a>
+                <a href="/admin/backup" class="nav-link">备份</a>
+            </div>
+        </nav>
+        <div class="breadcrumb">
+            <a href="/admin/">← 返回Dashboard</a>
+            <span class="breadcrumb-separator">/</span>
+            <span class="breadcrumb-current">健康监控</span>
+        </div>
+        <main class="main-content">
+            <div class="health-container">
+                <h1>Provider 健康监控</h1>
+
+                <!-- 死亡Provider - 突出显示 -->
+                <div class="monitor-section dead-section" id="dead-section">
+                    <h2>⚠️ 死亡 Provider</h2>
+                    <div id="dead-providers"
+                         hx-get="/api/admin/health/dead"
+                         hx-trigger="load, every 30s"
+                         hx-swap="innerHTML">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+
+                <!-- 全量健康状态 -->
+                <div class="monitor-section">
+                    <h2>全部 Provider 状态</h2>
+                    <div id="health-status"
+                         hx-get="/api/admin/health/status"
+                         hx-trigger="load, every 30s"
+                         hx-swap="innerHTML">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+        <footer class="footer">
+            <p>&copy; 2026 LLM Router Admin. All rights reserved.</p>
+        </footer>
+    </div>
+
+    <script src="/static/js/admin.js"></script>
+
+<style>
+.health-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+.dead-section {
+    border-left: 4px solid #dc3545;
+    background: #fff5f5;
+}
+.dead-section h2 {
+    color: #dc3545;
+}
+.status-alive {
+    color: #28a745;
+    font-weight: 600;
+}
+.status-dead {
+    color: #dc3545;
+    font-weight: 600;
+}
+.provider-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.provider-table th, .provider-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+.provider-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+}
+.provider-table tr:hover {
+    background: #f0f4ff;
+}
+.monitor-section {
+    background: white;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.monitor-section h2 {
+    font-size: 18px;
+    margin: 0 0 15px 0;
+    color: #333;
+}
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+}
+</style>
+</body>
+</html>
