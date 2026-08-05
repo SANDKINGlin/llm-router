@@ -110,10 +110,13 @@ class EnhancedAuthManager:
             raise HTTPException(status_code=401, detail=f"Token验证失败: {str(e)}")
 
     def authenticate_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
-        """验证用户凭据。"""
+        """验证用户凭据 (R16 加 WHERE is_active = 1 — inactive 用户不能登录)."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM user_roles WHERE username = ?", (username,))
+            cursor.execute(
+                "SELECT * FROM user_roles WHERE username = ? AND is_active = 1",
+                (username,)
+            )
             user = cursor.fetchone()
 
             if not user:
@@ -236,18 +239,28 @@ class EnhancedAuthManager:
             return success
 
     def delete_user(self, username: str) -> bool:
-        """删除用户（软删除，设置为inactive状态）。"""
-        # TODO: 需要添加is_active字段到user_roles表
+        """软删除用户 (R16 实施 — UPDATE is_active = 0, 保留记录).
+
+        跟 providers 表 soft_delete 模式对齐 (is_active = 0).
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM user_roles WHERE username = ?", (username,))
+            cursor.execute("SELECT id, is_active FROM user_roles WHERE username = ?", (username,))
             user = cursor.fetchone()
             if not user:
                 return False
+            if not user["is_active"]:
+                # 已 inactive, 幂等返 True (但 log 不重复)
+                conn.commit()
+                return True
 
-            cursor.execute("DELETE FROM user_roles WHERE username = ?", (username,))
-            self.log_auth_event(user["id"], "DELETE_USER", f"Deleted user: {username}")
+            cursor.execute(
+                "UPDATE user_roles SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE username = ?",
+                (username,)
+            )
+            self.log_auth_event(user["id"], "DELETE_USER", f"Soft-deleted user: {username}")
             conn.commit()
+            return True
             return True
 
 
