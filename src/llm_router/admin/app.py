@@ -947,6 +947,16 @@ async def keys_page(request: Request):
         raise HTTPException(status_code=500, detail=f"模板加载失败: {str(e)}")
 
 
+@admin_app.get("/admin/health", response_class=HTMLResponse)
+async def health_page(request: Request):
+    """健康监控页面 (3.9)。"""
+    template_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "llm_router" / "ui" / "templates" / "health.html"
+    )
+    return HTMLResponse(template_path.read_text(encoding="utf-8"))
+
+
 @admin_app.get("/admin/monitoring", response_class=HTMLResponse)
 async def monitoring_page(request: Request):
     """监控面板路由 - 渲染monitoring.html。"""
@@ -1413,18 +1423,58 @@ async def import_backup(req: BackupImportRequest):
 
 @admin_app.get("/api/admin/backup/db-sizes")
 async def get_db_sizes():
-    """获取数据库文件大小。"""
+    """获取数据库文件大小 + 监控告警 (2.6).
+
+    当任一 db 超过 WARN_THRESHOLD(1GB) 时,返回 warnings 段。
+    当 trace_hot 表超过 100 万行时,返回 migration_needed 标志。
+    """
+    import sqlite3
     data_dir = Path(__file__).resolve().parents[3] / "data"
+    WARN_THRESHOLD = 1_073_741_824  # 1GB
+    TRACE_HOT_MIGRATE = 1_000_000    # 100万行
+
+    db_files = [
+        ("trace.db", "trace_hot"),
+        ("health.db", None),
+        ("scanner.db", None),
+        ("ledger.db", None),
+    ]
 
     sizes = {}
-    for db_file in ["trace.db", "health.db", "scanner.db", "ledger.db"]:
+    warnings = []
+    for db_file, hot_table in db_files:
         db_path = data_dir / db_file
         if db_path.exists():
-            sizes[db_file] = os.path.getsize(db_path)
+            size = os.path.getsize(db_path)
+            sizes[db_file] = size
+            if size > WARN_THRESHOLD:
+                warnings.append(f"{db_file}: {size / 1e9:.1f}GB (超过 1GB 告警阈值)")
         else:
             sizes[db_file] = 0
 
-    return sizes
+    # trace_hot 超 100 万行 → 迁移触发
+    migration_needed = False
+    try:
+        trace_path = data_dir / "trace.db"
+        if trace_path.exists():
+            conn = sqlite3.connect(str(trace_path))
+            cur = conn.execute("SELECT COUNT(*) FROM trace_hot")
+            row_count = cur.fetchone()[0]
+            conn.close()
+            if row_count > TRACE_HOT_MIGRATE:
+                migration_needed = True
+                warnings.append(
+                    f"trace_hot: {row_count:,} 行 (超过 {TRACE_HOT_MIGRATE:,} "
+                    f"迁移阈值, 建议迁移到 trace_cold)"
+                )
+    except Exception:
+        pass  # trace_hot 表不存在或连接失败 → 不阻塞
+
+    return {
+        "sizes": sizes,
+        "warnings": warnings,
+        "migration_needed": migration_needed,
+    }
 
 
 # ===== 监控观测接口 =====
@@ -1460,22 +1510,75 @@ async def get_rate_limits():
     }
 
 
+def _get_health_store():
+    """懒初始化 HealthStore (避免 import 期副作用)."""
+    from llm_router.store.health_store import HealthStore
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    return HealthStore(data_dir / "health.db")
+
+
 @admin_app.get("/api/admin/health/status")
 async def get_health_status():
-    """获取所有provider健康状态。"""
-    # TODO: 需要从HealthStore查询
-    providers = [p.name for p in policy().providers]
-    return {
-        "providers": [
-            {
-                "provider": p,
-                "alive": True,
-                "last_probe": None,
-                "consecutive_failures": 0,
-            }
-            for p in providers
-        ]
-    }
+    """获取所有provider健康状态 (2.9 — 接 HealthStore 真数据)."""
+    store = _get_health_store()
+    await store.init()
+    try:
+        rows = []
+        async with store._db() as db:
+            cursor = await db.execute(
+                "SELECT provider, alive, last_probe_at, latency_ms FROM health ORDER BY provider"
+            )
+            async for row in cursor:
+                rows.append({
+                    "provider": row[0],
+                    "alive": bool(row[1]),
+                    "last_probe": row[2],
+                    "latency_ms": row[3],
+                })
+        return {"providers": rows}
+    finally:
+        await store.close()
+
+
+@admin_app.get("/api/admin/health/dead")
+async def get_dead_providers():
+    """获取死亡 provider 列表 (2.9)."""
+    store = _get_health_store()
+    await store.init()
+    try:
+        rows = []
+        async with store._db() as db:
+            cursor = await db.execute(
+                "SELECT provider, last_probe_at, latency_ms FROM health WHERE alive = 0 ORDER BY last_probe_at DESC"
+            )
+            async for row in cursor:
+                rows.append({
+                    "provider": row[0],
+                    "last_probe": row[1],
+                    "latency_ms": row[2],
+                })
+        return {"dead": rows, "count": len(rows)}
+    finally:
+        await store.close()
+
+
+@admin_app.get("/api/admin/health/probe-history/{provider}")
+async def get_probe_history(provider: str):
+    """获取单个 provider 24h 探活历史 (2.9)."""
+    store = _get_health_store()
+    await store.init()
+    try:
+        row = await store.get(provider)
+        if row is None:
+            return {"provider": provider, "found": False}
+        return {
+            "provider": provider,
+            "alive": row.alive,
+            "last_probe_at": row.last_probe_at,
+            "latency_ms": row.latency_ms,
+        }
+    finally:
+        await store.close()
 
 
 @admin_app.get("/api/admin/traces/{correlation_id}")
