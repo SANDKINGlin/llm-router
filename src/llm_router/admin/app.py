@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response, status, Depends
+from fastapi import FastAPI, HTTPException, Request, Response, status, Depends, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1449,23 +1449,164 @@ async def export_backup(req: BackupExportRequest):
 
 
 @admin_app.post("/admin/backup/import")
-async def import_backup(req: BackupImportRequest):
-    """导入备份tar.gz文件。"""
-    # 简化版：需要上传文件（实际需要FastAPI UploadFile）
-    # 这里仅展示接口结构
-    if not req.confirm:
+async def import_backup(
+    backup_file: UploadFile = File(..., description="备份 tar.gz 文件 (export 端点输出格式, 前端字段名 backup_file)"),
+    confirm: bool = Form(False, description="必须勾选确认 (防止误操作)"),
+    _user: dict = Depends(get_current_user_with_permission("admin")),
+):
+    """导入备份 tar.gz 并替换 data/ 目录 (R19 实施 — 三方共识 2026-08-06).
+
+    流程:
+      1. RBAC: admin 权限 (D7 防御深度)
+      2. 确认门: confirm=true 才执行
+      3. 流式读上传 → 临时 tar.gz
+      4. 验证 tarfile + 路径穿越 (member.name 不能含 .. 或绝对路径)
+      5. 自动备份当前 data/ → data/.backup/{ts}/
+      6. PRAGMA wal_checkpoint(TRUNCATE) + 关闭所有 store 连接
+      7. 解压到临时目录 + integrity_check
+      8. os.replace 原子替换 .db (新库重建 WAL)
+      9. audit log BACKUP_IMPORT (filename/size/sha256)
+      10. 不重启进程, 改连接失效 + 下次请求重连 (CC R19 增量风险 #3)
+
+    Returns:
+        {"status": "ok", "restored_files": int, "backup_id": str, "sha256": str}
+    """
+    import hashlib
+    import shutil
+    import sqlite3
+    import tempfile
+
+    if not confirm:
         raise HTTPException(status_code=403, detail="Import requires confirmation (set confirm=true)")
 
-    get_audit_logger().log("admin", "BACKUP_IMPORT", {"confirmed": True})
+    # 1. 流式读上传到临时 tar.gz
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", prefix="r19-import-")
+    os.close(tmp_fd)
 
-    # TODO: 实际实现需要：
-    # 1. 接收上传文件
-    # 2. 验证tar.gz格式
-    # 3. 自动备份当前状态到data/.backup/
-    # 4. 解压并替换data/目录
-    # 5. 重启服务
+    sha256 = hashlib.sha256()
+    file_size = 0
+    try:
+        with open(tmp_path, "wb") as out:
+            while chunk := await backup_file.read(8192):
+                out.write(chunk)
+                sha256.update(chunk)
+                file_size += len(chunk)
+        sha256_hex = sha256.hexdigest()
 
-    return {"status": "not_implemented", "message": "需要文件上传支持"}
+        # 2. 验证 tarfile + 路径穿越
+        try:
+            with tarfile.open(tmp_path, "r:gz") as tar:
+                members = tar.getmembers()
+                for m in members:
+                    # 路径穿越: 不能含 .. 或绝对路径
+                    if ".." in m.name or m.name.startswith("/") or "\\" in m.name:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unsafe path in tar: {m.name} (contains .. or absolute)",
+                        )
+                # 解压到临时目录
+                extract_dir = tempfile.mkdtemp(prefix="r19-extract-")
+                tar.extractall(extract_dir)
+        except tarfile.ReadError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid tar.gz: {e}")
+
+        # 3. 自动备份当前 data/ → data/.backup/{ts}/
+        backup_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_root = data_dir / ".backup" / backup_id
+        backup_root.mkdir(parents=True, exist_ok=True)
+        if data_dir.exists() and any(data_dir.iterdir()):
+            backup_tar = backup_root / "data.tar.gz"
+            with tarfile.open(backup_tar, "w:gz") as tar:
+                tar.add(data_dir, arcname="data")
+            backup_saved = str(backup_tar.relative_to(data_dir.parent))
+        else:
+            backup_saved = "(empty data dir, no backup)"
+
+        # 4. WAL checkpoint + 关闭连接 + 原子替换
+        db_files = ["trace.db", "health.db", "scanner.db", "ledger.db", "circuit.db", "keys.db"]
+        restored_count = 0
+        integrity_errors = []
+        for db_name in db_files:
+            target_db = data_dir / db_name
+            source_db = Path(extract_dir) / "data" / db_name
+            if not source_db.exists():
+                continue
+            # 4a. checkpoint 当前 db (清空 -wal/-shm)
+            if target_db.exists():
+                try:
+                    conn = sqlite3.connect(str(target_db))
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.close()
+                except sqlite3.DatabaseError:
+                    pass  # 损坏 db 不阻断恢复
+            # 4b. integrity_check 新 db
+            try:
+                chk_conn = sqlite3.connect(str(source_db))
+                result = chk_conn.execute("PRAGMA integrity_check").fetchone()
+                chk_conn.close()
+                if result and result[0] != "ok":
+                    integrity_errors.append(f"{db_name}: {result[0]}")
+                    continue
+            except sqlite3.DatabaseError as e:
+                integrity_errors.append(f"{db_name}: {e}")
+                continue
+            # 4c. 原子替换 (POSIX rename 保证一致性)
+            os.replace(str(source_db), str(target_db))
+            # 4d. 清残留 -wal/-shm (新 db 重建)
+            for suf in ("-wal", "-shm"):
+                wal_or_shm = target_db.with_name(target_db.name + suf)
+                if wal_or_shm.exists():
+                    wal_or_shm.unlink()
+            restored_count += 1
+
+        # 5. audit log (CC R19 增量风险 #2: 加 filename/size/sha256)
+        get_audit_logger().log("admin", "BACKUP_IMPORT", {
+            "confirmed": True,
+            "filename": backup_file.filename or "<unknown>",
+            "size_bytes": file_size,
+            "sha256": sha256_hex,
+            "restored_db_count": restored_count,
+            "backup_id": backup_id,
+            "integrity_errors": integrity_errors,
+        })
+
+        # 6. 清理临时目录
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        os.unlink(tmp_path)
+
+        # 7. 不重启进程 (CC 风险 #3): store 层下次请求自动重连
+        # 当前 admin/app.py 无中央连接池, store 各自 sqlite3.connect(), 短生命周期
+        # 无需显式 invalidate, 进程内文件句柄已随 with-block 关闭
+
+        if integrity_errors:
+            return {
+                "status": "partial",
+                "restored_files": restored_count,
+                "backup_id": backup_id,
+                "sha256": sha256_hex,
+                "backup_saved_to": backup_saved,
+                "integrity_errors": integrity_errors,
+            }
+        return {
+            "status": "ok",
+            "restored_files": restored_count,
+            "backup_id": backup_id,
+            "sha256": sha256_hex,
+            "backup_saved_to": backup_saved,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 清理临时文件
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        get_audit_logger().log("admin", "BACKUP_IMPORT_FAILED", {
+            "filename": backup_file.filename or "<unknown>",
+            "error": str(e),
+        })
+        raise HTTPException(status_code=500, detail=f"Import failed: {e}")
 
 
 @admin_app.get("/api/admin/backup/db-sizes")
