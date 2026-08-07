@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tarfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -1787,14 +1788,44 @@ async def get_circuit_breakers():
 
 @admin_app.get("/api/admin/metrics/rate-limits")
 async def get_rate_limits():
-    """获取429限流统计。"""
-    # TODO: 需要从trace.db查询429记录
-    # 这里返回模拟数据
-    return {
-        "total_429": 0,
-        "providers": {},
-        "last_24h": [],
-    }
+    """429 限流统计 (R13 实施 — 接 trace.db 真实数据).
+
+    返回 24h 内 rate_limited 记录数, 按 provider 分组.
+    SQL: `SELECT provider, COUNT(*) FROM trace_hot WHERE result = 'rate_limited' AND created_at >= ?`
+    """
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    trace_path = data_dir / "trace.db"
+    now = datetime.now()
+    cutoff = (now - timedelta(hours=24)).isoformat()
+
+    if not trace_path.exists():
+        return {"total_429": 0, "providers": {}, "last_24h": [],
+                "data_source": "empty"}
+
+    try:
+        conn = sqlite3.connect(str(trace_path))
+        cur = conn.execute(
+            "SELECT provider, COUNT(*) FROM trace_hot WHERE result = 'rate_limited' AND created_at >= ? GROUP BY provider",
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        per_provider = {}
+        total = 0
+        for provider, count in rows:
+            per_provider[provider] = count
+            total += count
+
+        return {
+            "total_429": total,
+            "providers": per_provider,
+            "last_24h": [],
+            "data_source": "trace.db" if total > 0 else "empty",
+        }
+    except Exception as e:
+        return {"total_429": 0, "providers": {}, "last_24h": [],
+                "data_source": "error", "error": str(e)}
 
 
 def _get_health_store():
