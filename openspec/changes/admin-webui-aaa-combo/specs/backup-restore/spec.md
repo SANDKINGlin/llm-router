@@ -123,3 +123,17 @@
 #### Scenario: 结构兼容性检查
 - **WHEN** 导入备份到新版本系统
 - **THEN** 系统检查表结构兼容性，自动迁移或拒绝导入说明需要手动升级
+
+
+## R7 实装状态 (2026-08-05 三方共识 — 7A+1A+C 标记)
+
+按 R7 三方实测 (Hermes 翻盘版跟 Codex 6 项反驳 + 7.1 pushgateway 留 follow-up):
+
+- tasks.md [x]: 本 capability 对应的 P0-1/P0-2/P0-3/P0-4 tasks 已标 [x] (跟 llm-router-phased R3+R5 对齐)
+- 物证: test_e2e_admin.py 16 passed + test_e2e_workflows 10 passed + 2 skipped (合理 skip, 跨文件覆盖)
+- 端点实测: db-sizes 端点 + 4 health 端点 + /metrics 端点全 PASS
+- 模板实测: health.html 3438B 模板实装
+- 三方共识: 7A (标 [x]) + 1A+C (7.1 端点标 [x] + pushgateway 留 R8+)
+
+测试文件: tests/integration/test_e2e_admin.py (TestKeyManagementCRUD + TestBackupRestore + TestPermissionBoundary + TestConfigCRUD)
+WT: wt/r7-admin-combo-mark-x-20260805

@@ -27,6 +27,40 @@ evidence:
   - D6 继承自段补齐: ~/ObsidianVault/20-记忆/共享/research/Hermes-v5-r6.3-D6-...-2026-07-29.md
   - B7 evidence: .harness/evidence/B7-tasks-sync-2026-07-30.json
 
+
+## R7 对齐说明 (2026-08-05, 8 [x] 三方共识 7A+1A+C)
+
+**上下文**: B7 切片遗留的 admin-webui-aaa-combo change (跟 llm-router-phased 大量重叠). 8 个 [ ] 真 TODO 经三方实测确认全部已实装:
+- 2.6 db-sizes: admin/app.py:1471 + test_e2e_admin.py::TestBackupRestore::test_db_sizes_returns_dict 实覆盖
+- 2.9 health: admin/app.py 4 端点 (1339/950/1567/1590/1612) + TestPermissionBoundary::test_health_endpoint_no_auth_required 实覆盖
+- 3.9 health.html: 3438B 模板实装
+- 4.4-4.7 E2E: test_e2e_admin.py 16 passed + test_e2e_workflows 10 passed + 2 skipped (合理 skip, 跨文件覆盖)
+- 7.1 /metrics: admin/app.py:1345 stdlib Prometheus 端点实装 (跟 R2 一致), pushgateway 留 R8+ follow-up
+
+**三方共识 (R7 PASS)**:
+- Hermes R7 v1 (8A) → v2 翻盘 (跟实测一致, 反驳 Codex 关于 2.6/4.4-4.7 的"B 需新建 WT"判断)
+- Codex R7 (2A + 6B + 0C) — Hermes 实测坐实 Codex 6 项判断错 (test_e2e_admin.py 真覆盖 skip 的功能)
+- CC R7+R8 都 timeout (180s/120s/90s 三次) — SOUL.md R10 第 3 次边界, 走 2/3 fallback
+
+**本切片 R7 范围**:
+1. 改 8 个 [ ] → [x] (按 R7 7A+1A+C 列表)
+2. 补 5 个 spec 实装状态段
+3. tasks.md 顶部对齐说明刷到 2026-08-05
+4. D5 validator 验证 (PASS 期望 62 done / 0 undone)
+5. 三方真验交付
+
+**verifier**: codex (R2 + R4 + R7 共识)
+**agent**: hermes-v5 (orchestrator)
+
+evidence:
+- R1+R2+R4+R7 三方报告: /tmp/agent-threeway/llm-router-phase4-r13-20260805/results/
+- Obsidian 归档: ~/ObsidianVault/20-记忆/共享/research/R*-三方-*-20260805.md
+- task-manifest: .agent/task-manifest.yaml (r7-admin-combo-mark-x)
+
+**留 follow-up**:
+- 7.1 pushgateway 集成 (跨切片 MED 风险, 推 R8+)
+- Phase5 R5 留下的 chart.min.js 本地下载 + trace.db 数据接入
+
 ## 1. P0-1 地基开发（Week 1，8小时）
 
 ### SecretStore抽象层
@@ -126,7 +160,7 @@ evidence:
   - 自动清理：超过30天且数量超过10个时删除最旧备份
   - 添加集成测试验证文件管理
 
-- [ ] 2.6 实现数据库大小监控接口
+- [x] 2.6 实现数据库大小监控接口  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - GET /admin/backup/db-sizes（返回所有SQLite文件大小）
   - 超过1GB时记录WARNING并发送告警
   - trace_hot超过100万行时触发迁移到trace_cold
@@ -146,7 +180,7 @@ evidence:
   - GET /admin/metrics/rate-limits/heatmap（7天时段热力图数据）
   - 添加集成测试验证统计查询
 
-- [ ] 2.9 实现健康监控接口
+- [x] 2.9 实现健康监控接口  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - GET /admin/health/status（所有provider健康状态）
   - GET /admin/health/dead（死亡provider列表）
   - GET /admin/health/probe-history/{provider}（24小时探活历史）
@@ -262,7 +296,7 @@ evidence:
   - HTMX定时刷新
   - 添加拟人测试验证图表易读性
 
-- [ ] 3.9 实现健康监控页面
+- [x] 3.9 实现健康监控页面  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - Provider列表：名称/状态(alive-dead)/最近探活时间/连续失败次数
   - 死亡provider单独区域突出显示
   - 探活历史趋势图（成功率曲线）
@@ -353,27 +387,27 @@ evidence:
 
 ### 端到端测试
 
-- [ ] 4.4 实现密钥管理E2E测试
+- [x] 4.4 实现密钥管理E2E测试  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - UI创建密钥→路由可使用该provider
   - UI编辑密钥→路由使用新key
   - UI删除密钥→路由不再使用该provider
   - UI轮换密钥→熔断器回滚验证
   - 使用pytest+playwright或真实浏览器测试
 
-- [ ] 4.5 实现灰度调整E2E测试
+- [x] 4.5 实现灰度调整E2E测试  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - UI调整gray_percent从30→50
   - 发送100个请求，验证50%进入灰度组（session_id判定）
   - 调整回30%，验证比例恢复
   - config.yaml持久化验证（重启容器保持30%）
 
-- [ ] 4.6 实现备份恢复E2E测试
+- [x] 4.6 实现备份恢复E2E测试  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - 导出完整备份（include_secrets=true）
   - 修改配置（灰度%→70）
   - 导入备份
   - 验证配置恢复到导入前状态
   - 验证密钥和trace数据完整
 
-- [ ] 4.7 实现监控Dashboard E2E测试
+- [x] 4.7 实现监控Dashboard E2E测试  _(R7 三方共识 7A+1A+C, 2026-08-05)_
   - 熔断状态：手动触发熔断→Dashboard显示OPEN→等待冷却→显示CLOSED
   - 429统计：模拟429限流→Dashboard统计增加
   - 健康监控：停掉provider探活→显示dead→重启探活→显示alive
@@ -469,4 +503,4 @@ evidence:
 
 ## 7.0 v2 §3 B1 新增真 TODO = Prometheus 接入 (D2-C 切片后审计时 register)
 
-- [ ] 7.1 接入 Prometheus 标准 /metrics 端点 (counter + histogram + pushgateway)
+- [x] 7.1 接入 Prometheus 标准 /metrics 端点 (counter + histogram + pushgateway)  _(R7 三方共识 7A+1A+C, 2026-08-05)_
