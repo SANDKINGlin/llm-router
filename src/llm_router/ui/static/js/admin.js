@@ -285,7 +285,7 @@
      * 处理监控数据渲染
      */
     function setupMonitoringHandlers() {
-        const targets = ['circuit-breakers', 'rate-limits', 'health-status'];
+        const targets = ['circuit-breakers', 'rate-limits', 'health-status', 'dead-providers'];
 
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             const targetId = evt.detail.target.id;

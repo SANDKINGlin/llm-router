@@ -1,0 +1,34 @@
+{
+  "title": "LLM Router Metrics",
+  "uid": "llm-router",
+  "panels": [
+    {
+      "title": "Request Rate",
+      "type": "graph",
+      "targets": [
+        {"expr": "rate(llm_router_requests_total[5m])", "legendFormat": "{{provider}}"}
+      ]
+    },
+    {
+      "title": "Error Rate",
+      "type": "graph",
+      "targets": [
+        {"expr": "rate(llm_router_errors_total[5m])", "legendFormat": "{{provider}}"}
+      ]
+    },
+    {
+      "title": "Active Keys",
+      "type": "stat",
+      "targets": [
+        {"expr": "llm_router_active_keys"}
+      ]
+    },
+    {
+      "title": "DB Sizes",
+      "type": "table",
+      "targets": [
+        {"expr": "llm_router_db_size_bytes", "format": "table"}
+      ]
+    }
+  ]
+}

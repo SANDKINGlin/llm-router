@@ -42,7 +42,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/llm-router.json:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     restart: unless-stopped
 
 volumes:
