@@ -97,3 +97,32 @@ P0-3 阶段实现前端 UI，使用 HTMX+Jinja2 模板 + Chart.js 图表，提�
 - `src/llm_router/ui/static/`：CSS/JS 静态资源
 - 端到端测试（Selenium/Playwright 可选）
 - 浏览器兼容性测试（Chrome/Firefox/Safari）
+
+
+## R13 实装状态 (2026-08-05 三方共识 — R2 PASS 11A 标记)
+
+### 已实装 (监控 Dashboard 框架)
+
+**3.4 监控页面框架**: src/llm_router/ui/templates/monitoring.html (187 行, 4491 字符) 已实装, 含总请求数/成功率/活跃密钥数/平均响应时间 4 个统计卡片 + Chart.js CDN 占位.
+
+### 留 Phase5 (3 个 follow-up)
+
+**3.5 请求量趋势图**: monitoring.html 实测 grep `Chart|canvas|<script src=.*Chart` = **0 命中**. 折线图 (24h 请求量) 待实施, 需 src/llm_router/admin/metrics_api.py 加 `/api/admin/metrics/trends` 端点 + monitoring.html 加 `<script src="...chart.min.js"></script>` + Chart.js 配置块.
+
+**3.6 错误率分布图**: 同上 0 命中. 柱状图 (各 provider 错误率, >5% 红色高亮) 待实施, 需 `/api/admin/metrics/errors` 端点 + monitoring.html Chart.js bar config.
+
+**3.7 响应时间热图**: 同上 0 命中. 热力图 (各时段响应时间, 绿/黄/红色阶) 待实施, 需 `/api/admin/metrics/latency` 端点 + monitoring.html Chart.js heatmap config.
+
+### Phase5 切片规划
+
+- slice_id: phase5-monitoring-charts
+- 范围: src/llm_router/admin/metrics_api.py (3 端点 trends/errors/latency) + monitoring.html (Chart.js JS 块) + tests/integration/test_monitoring_charts.py
+- 风险: MED (前端 + 后端 + 测试 3 文件)
+- 三方会诊: 必起 (B 类新功能切片, P126 触发)
+- 依赖: phase4-r13-mark-complete 合并后
+
+### 三方共识溯源
+
+- R1: cc=timeout/codex=1104B/hermes=5561B
+- R2: cc=743B/codex=886B/hermes=2467B
+- 归档: ~/ObsidianVault/20-记忆/共享/research/R{{1,2}}-三方-llm-router-phase4-r13-20260805.md

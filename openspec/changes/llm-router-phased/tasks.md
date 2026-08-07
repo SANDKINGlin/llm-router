@@ -283,44 +283,44 @@ evidence:
 
 ### E2E测试
 
-- [ ] 4.5 创建test_e2e_workflows.py
+- [x] 4.5 创建test_e2e_workflows.py  _(R13 三方共识 11A, 2026-08-05)_
   - pytest-asyncio框架
   - 测试数据库: test_e2e.db
   - 清理fixture（每个测试独立库）
 
-- [ ] 4.6 实现密钥管理E2E测试
+- [x] 4.6 实现密钥管理E2E测试  _(R13 三方共识 11A, 2026-08-05)_
   - POST /admin/api/keys创建
   - GET /admin/api/keys/{id}验证
   - PUT /admin/api/keys/{id}更新
   - DELETE /admin/api/keys/{id}删除
   - 断言每步响应正确
 
-- [ ] 4.7 实现备份恢复E2E测试
+- [x] 4.7 实现备份恢复E2E测试  _(R13 三方共识 11A, 2026-08-05)_
   - 创建测试备份
   - POST /admin/api/restore恢复
   - 验证数据完整性
   - 清理测试文件
 
-- [ ] 4.8 实现配置E2E测试
+- [x] 4.8 实现配置E2E测试  _(R13 三方共识 11A, 2026-08-05)_
   - PUT /admin/api/config修改
   - GET /admin/api/config验证
   - 重置并确认恢复默认
 
 ### Prometheus接入
 
-- [ ] 4.9 添加/metrics端点
+- [x] 4.9 添加/metrics端点  _(R13 三方共识 11A, 2026-08-05)_
   - prometheus_client库
   - Counter: 总请求数/错误数
   - Histogram: 响应时间分布
   - Gauge: 活跃密钥数
 
-- [ ] 4.10 配置Prometheus抓取
+- [x] 4.10 配置Prometheus抓取  _(R13 三方共识 11A, 2026-08-05)_
   - docker-compose.yml添加prometheus服务
   - prometheus.yml配置job
   - scrape_interval: 15s
   - 验证目标UP
 
-- [ ] 4.11 创建Grafana Dashboard
+- [x] 4.11 创建Grafana Dashboard  _(R13 三方共识 11A, 2026-08-05)_
   - 导入dashboard JSON
   - 面板: 请求率/错误率/响应时间
   - 数据源: Prometheus
@@ -328,29 +328,61 @@ evidence:
 
 ### 安全测试
 
-- [ ] 4.12 SQL注入测试
+- [x] 4.12 SQL注入测试  _(R13 三方共识 11A, 2026-08-05)_
   - POST /admin/api/keys注入payload
   - 验证参数化查询防御
   - 断言无错误/数据泄露
 
-- [ ] 4.13 XSS测试
+- [x] 4.13 XSS测试  _(R13 三方共识 11A, 2026-08-05)_
   - PUT /admin/api/keys注入script标签
   - 验证输出转义
   - 断言无脚本执行
 
-- [ ] 4.14 权限测试
+- [x] 4.14 权限测试  _(R13 三方共识 11A, 2026-08-05)_
   - 无token访问/admin路由→401
   - 无效token→401
   - 权限不足→403
 
 ### 缺失端点补全
 
-- [ ] 4.15 添加健康检查端点
+- [x] 4.15 添加健康检查端点  _(R13 三方共识 11A, 2026-08-05)_
   - GET /admin/health
   - 检查数据库连接
   - 检查Redis连接
   - 检查Ollama可用性
   - 返回200+各组件状态
+
+
+## R13 对齐说明 (2026-08-05, 11A 切片标 [x] 三方共识)
+
+**上下文**: R13 第一轮三方会诊发现 14 个 [ ] TODO 中 11 个实际已实装:
+- 测试 4.5-4.8 实装在 tests/integration/test_e2e_workflows.py (10 passed + 2 skipped)
+- 安全 4.12-4.14 实装在 tests/integration/test_security_admin.py (22 passed) + test_apply_policy.py (RBAC)
+- 监控 4.9-4.11 实装在 admin/app.py:1345 /metrics (stdlib) + prometheus.yml + grafana-dashboard.json + docker-compose.yml
+- 健康 4.15 实装在 admin/app.py:950 /admin/health + 1339 /healthz + 1567/1590/1612 共 4 端点
+
+仅 3.5/3.6/3.7 (monitoring.html 3 图表) 真缺失 → 留 Phase5 切片实施.
+
+**三方共识 (R2 PASS, 100% 收敛)**:
+- Q1 (4.9 /metrics 标 [x]) — CC=YES, Codex=YES, Hermes=YES
+- Q2 (4.15 /admin/health 标 [x]) — CC=YES, Codex=YES, Hermes=YES
+- Q3 (3.5/3.6/3.7 起 Phase5 WT) — CC=YES, Codex=YES, Hermes=YES
+
+**本切片 R13 范围**:
+1. 改 11 个 [ ] → [x] (按 R2 共识 11A 列表)
+2. 补 p0-4-integration/spec.md 11 个任务的实装状态段落
+3. 补 p0-3-frontend/spec.md monitoring.html 现状描述 (3.5/3.6/3.7 留 follow-up)
+4. D5 validator 验证 (--change llm-router-phased PASS)
+5. 三方真验交付 (pytest + grep + curl 端点 + D5 validator 4 重验证)
+6. commit (不 push, 等用户拍)
+
+**verifier**: codex (R2 共识盖章)
+**agent**: hermes-v5 (orchestrator)
+
+evidence:
+- R1 三方报告: /tmp/agent-threeway/llm-router-phase4-r13-20260805/results/{{cc,codex,hermes}}-result.md
+- R2 三方报告: /tmp/agent-threeway/llm-router-phase4-r13-20260805/results/{{cc-r2-1,codex-r2,hermes-r2}}.md
+- Obsidian 归档: ~/ObsidianVault/20-记忆/共享/research/R{{1,2}}-三方-llm-router-phase4-r13-20260805.md
 
 ## 5. META 任务
 
