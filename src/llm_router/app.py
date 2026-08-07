@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+import weakref
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -94,6 +95,11 @@ def _build_three_layer_candidates(
     return entries, candidates
 
 
+# R20 F1: app 级持久 store weakref 列表 (供 import_backup 调 reconnect)
+# weakref 避免循环引用;存的是 module-level 单例, 非 admin per-request store
+_store_instances: list[weakref.ref] = []
+
+
 def _build_cascade() -> Cascade:
     """构造生产 Cascade(模块级单例):三层候选池 静态真→动态→mock(Phase B · B2.1)。
 
@@ -119,12 +125,25 @@ def _build_cascade() -> Cascade:
     quotas = {e.name: e.quota for e in entries.values()}
     cost_gate = CostGate(ledger, quotas)
 
+    # R20 F1: app 级持久 store 实例 (os.replace 后需要 reconnect 防数据漂移)
+    # 注意: ledger/circuit breaker 也持 db 连接, 一并注册
+    _app_trace_store = TraceStore(_DATA_DIR / "trace.db")
+    _app_health_store = HealthStore(_DATA_DIR / "health.db")
+    # R20 F1 注册 weakref 列表 (供 import_backup 调 reconnect)
+    _store_instances.clear()  # 防重入累积
+    _store_instances.extend([
+        weakref.ref(_app_trace_store),
+        weakref.ref(_app_health_store),
+    ])
+    if ledger is not None:
+        _store_instances.append(weakref.ref(ledger))
+
     return Cascade(
-        store=TraceStore(_DATA_DIR / "trace.db"),
+        store=_app_trace_store,
         breaker=CircuitBreaker(_DATA_DIR / "circuit.db"),
         strategy=EpsilonGreedy(entries),
         candidates=candidates,
-        health_store=HealthStore(_DATA_DIR / "health.db"),
+        health_store=_app_health_store,
         policy_enforcer=enforcer,
         ledger=ledger,
         cost_gate=cost_gate,

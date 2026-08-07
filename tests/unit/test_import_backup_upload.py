@@ -49,13 +49,9 @@ def temp_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(temp_data_dir, monkeypatch):
-    """TestClient, monkeypatch import_backup 的 data_dir 到临时目录."""
+    """TestClient, monkeypatch import_backup 的 data_dir 到临时目录 (R20 F2 ENV 注入)."""
+    monkeypatch.setenv("LLM_ROUTER_BACKUP_DATA_DIR", str(temp_data_dir))
     from llm_router.admin import app as admin_module
-    # 替换 data_dir 路径 (import_backup 第 1 句)
-    monkeypatch.setattr(
-        "llm_router.admin.app.Path",
-        _make_patched_path(temp_data_dir),
-    )
     return TestClient(admin_module.admin_app, headers=HEADERS)
 
 
@@ -140,3 +136,146 @@ class TestImportBackup:
         r = client.post("/admin/backup/import", files=files, data=data)
         assert r.status_code == 400, f"路径穿越应被拒 (400), got {r.status_code}: {r.text[:200]}"
         assert "Unsafe path" in r.text or ".." in r.text, f"错误信息应含 Unsafe path: {r.text[:200]}"
+
+    # ── R20 新增 5 测试 (R1 + F2×3 + R4) ─────────────────────────────────
+
+    def _make_valid_targz(self, db_files: dict[str, bytes]) -> bytes:
+        """构造 tar.gz 含 data/<db_name> members. db_files: {name: raw db bytes}."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for name, raw in db_files.items():
+                info = tarfile.TarInfo(name=f"data/{name}")
+                info.size = len(raw)
+                tar.addfile(info, io.BytesIO(raw))
+        return buf.getvalue()
+
+    def _make_valid_db(self, table: str = "t", value: str = "new") -> bytes:
+        """构造有效 sqlite db 含 1 行."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        conn = sqlite3.connect(tmp.name)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"CREATE TABLE {table} (v TEXT)")
+        conn.execute(f"INSERT INTO {table} VALUES (?)", (value,))
+        conn.commit()
+        conn.close()
+        with open(tmp.name, "rb") as f:
+            data = f.read()
+        os.unlink(tmp.name)
+        return data
+
+    def test_oversized_upload_rejected(self, client, monkeypatch):
+        """R20 R1: Content-Length 预检 — 超大上传返回 413 (用小 limit 测逻辑)."""
+        # monkeypatch ENV 限到 1 字节, 任何 Content-Length > 1 都 413
+        monkeypatch.setenv("LLM_ROUTER_BACKUP_MAX_UPLOAD_MB", "0")  # 0 MB = 0 bytes
+        # 构造小 tar.gz, 但 Content-Length 字段会被 TestClient 自动算 (用 multipart 没法直接 set header)
+        # 改测逻辑: ENV=0 时即使小上传也 413
+        tar_bytes = self._make_valid_targz({"circuit.db": self._make_valid_db()})
+        files = {"backup_file": ("backup.tar.gz", tar_bytes, "application/gzip")}
+        data = {"confirm": "true"}
+        r = client.post("/admin/backup/import", files=files, data=data)
+        # ENV=0 让 MAX_BYTES=0, Content-Length > 0 → 413
+        assert r.status_code == 413, f"超大上传应 413, got {r.status_code}: {r.text[:200]}"
+
+    def test_happy_path_single_db(self, client, temp_data_dir):
+        """R20 F2: happy-path — 含 circuit.db 的 tar.gz → 200 + restored_files=1 + sha256."""
+        # 构造源 db (含 'r20_test' marker)
+        src_db_bytes = self._make_valid_db(table="t", value="r20_test")
+        tar_bytes = self._make_valid_targz({"circuit.db": src_db_bytes})
+
+        files = {"backup_file": ("backup.tar.gz", tar_bytes, "application/gzip")}
+        data = {"confirm": "true"}
+        r = client.post("/admin/backup/import", files=files, data=data)
+        assert r.status_code == 200, f"happy-path 应 200, got {r.status_code}: {r.text[:300]}"
+        body = r.json()
+        assert body["status"] == "ok", f"status 应 ok, got {body.get('status')}: {body}"
+        assert body["restored_files"] >= 1, f"restored_files 应 ≥1, got {body['restored_files']}"
+        assert "sha256" in body and len(body["sha256"]) == 64, f"sha256 应 64 字符 hex: {body.get('sha256')}"
+        assert "backup_id" in body, f"backup_id 缺失: {body}"
+        assert "checkpoint_failures" in body, f"checkpoint_failures 缺失: {body}"
+
+        # 验证目标 db 真被替换 (查 r20_test marker 存在)
+        conn = sqlite3.connect(str(temp_data_dir / "circuit.db"))
+        row = conn.execute("SELECT v FROM t").fetchone()
+        conn.close()
+        assert row and row[0] == "r20_test", f"db 应被替换, got {row}"
+
+    def test_multi_db_restore(self, client, temp_data_dir):
+        """R20 F2+R4: 3 库恢复 — 全过则全替换, restored_files=3."""
+        db_bytes = {}
+        for name in ("circuit.db", "trace.db", "scanner.db"):
+            # table name 不含 . (sqlite 不允许), 用 sanitize 后的短名
+            short = name.replace(".", "_")
+            db_bytes[name] = self._make_valid_db(table=f"t_{short}", value=f"new_{short}")
+        tar_bytes = self._make_valid_targz(db_bytes)
+
+        files = {"backup_file": ("backup.tar.gz", tar_bytes, "application/gzip")}
+        data = {"confirm": "true"}
+        r = client.post("/admin/backup/import", files=files, data=data)
+        assert r.status_code == 200, f"multi-db 应 200, got {r.status_code}: {r.text[:300]}"
+        body = r.json()
+        assert body["status"] == "ok"
+        assert body["restored_files"] == 3, f"应恢复 3 个 db, got {body['restored_files']}"
+
+        # 验证 3 个 db 都换了
+        for name in ("circuit.db", "trace.db", "scanner.db"):
+            short = name.replace(".", "_")
+            conn = sqlite3.connect(str(temp_data_dir / name))
+            row = conn.execute(f"SELECT v FROM t_{short}").fetchone()
+            conn.close()
+            assert row and row[0] == f"new_{short}", f"{name} 未替换, got {row}"
+
+    def test_corrupt_db_partial(self, client, temp_data_dir):
+        """R20 F2+R3+R4: 1 个 corrupt + 1 个正常 → status=partial + integrity_errors 字段.
+
+        R4 设计: 任一 integrity_errors 就不 replace 全部 (validate-first 策略).
+        corrupt 出现 → 全部 db 都不替换 (安全), 但 status=partial + integrity_errors 记录.
+        """
+        # 正常 db
+        good_db = self._make_valid_db(table="t_good", value="good_data")
+        # 损坏 db (写 random bytes 不是 sqlite)
+        corrupt_db = b"this is not a sqlite database at all xxxxxxxxxxxxxx"
+        tar_bytes = self._make_valid_targz({
+            "circuit.db": good_db,
+            "trace.db": corrupt_db,
+        })
+
+        files = {"backup_file": ("backup.tar.gz", tar_bytes, "application/gzip")}
+        data = {"confirm": "true"}
+        r = client.post("/admin/backup/import", files=files, data=data)
+        body = r.json()
+        # corrupt db 走 integrity_check → fail → 全部不替换 (R4 validate-first)
+        assert body["status"] == "partial", f"1 corrupt 应 partial, got {body.get('status')}: {body}"
+        assert "integrity_errors" in body, f"integrity_errors 缺失: {body}"
+        assert any("trace.db" in e for e in body["integrity_errors"]), \
+            f"integrity_errors 应含 trace.db: {body['integrity_errors']}"
+        # R4: 全部不替换, restored_files=0 (validate-first 安全策略)
+        assert body["restored_files"] == 0, \
+            f"R4 validate-first: corrupt 出现应全部不替换, got {body['restored_files']}"
+
+    def test_atomic_rollback_on_replace_failure(self, client, temp_data_dir, monkeypatch):
+        """R20 R4: os.replace 失败 → 已替换的 db 从 backup 恢复 (500 + 回滚)."""
+        # 1. 准备 2 个 db
+        db_bytes = {
+            "circuit.db": self._make_valid_db(table="t", value="new_circuit"),
+            "scanner.db": self._make_valid_db(table="t", value="new_scanner"),
+        }
+        tar_bytes = self._make_valid_targz(db_bytes)
+
+        # 2. monkeypatch os.replace, 第 2 次调用抛 OSError
+        original_replace = os.replace
+        call_count = [0]
+        def _failing_replace(src, dst):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise OSError("Disk full (simulated)")
+            return original_replace(src, dst)
+        monkeypatch.setattr(os, "replace", _failing_replace)
+
+        # 3. 测
+        files = {"backup_file": ("backup.tar.gz", tar_bytes, "application/gzip")}
+        data = {"confirm": "true"}
+        r = client.post("/admin/backup/import", files=files, data=data)
+        assert r.status_code == 500, f"os.replace 失败应 500, got {r.status_code}: {r.text[:300]}"
+        assert "Rolled back" in r.text or "Atomic replace failed" in r.text, \
+            f"响应应含回滚信息: {r.text[:200]}"

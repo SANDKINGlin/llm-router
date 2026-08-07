@@ -3,6 +3,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_router.admin.app import admin_app
+from llm_router.admin.auth import _audit_logger
+
+
+@pytest.fixture(autouse=True)
+def _reset_audit_log():
+    """autouse: 每个测试前清空 module-level _audit_logger._logs.
+    防止 integration 顺序依赖 flake (test_login_logged 等共享 _logs).
+    """
+    _audit_logger._logs.clear()
+    yield
+    _audit_logger._logs.clear()
 
 
 class TestAuthMiddleware:

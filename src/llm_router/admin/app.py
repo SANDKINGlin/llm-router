@@ -1454,33 +1454,56 @@ async def import_backup(
     confirm: bool = Form(False, description="必须勾选确认 (防止误操作)"),
     _user: dict = Depends(get_current_user_with_permission("admin")),
 ):
-    """导入备份 tar.gz 并替换 data/ 目录 (R19 实施 — 三方共识 2026-08-06).
+    """导入备份 tar.gz 并替换 data/ 目录 (R19 实施 — 三方共识 2026-08-06,
+    R20 增强: R1 max upload size, F1 store reconnect, F3 symlink, R3 audit log, R4 atomic).
 
     流程:
       1. RBAC: admin 权限 (D7 防御深度)
       2. 确认门: confirm=true 才执行
-      3. 流式读上传 → 临时 tar.gz
-      4. 验证 tarfile + 路径穿越 (member.name 不能含 .. 或绝对路径)
-      5. 自动备份当前 data/ → data/.backup/{ts}/
-      6. PRAGMA wal_checkpoint(TRUNCATE) + 关闭所有 store 连接
-      7. 解压到临时目录 + integrity_check
-      8. os.replace 原子替换 .db (新库重建 WAL)
-      9. audit log BACKUP_IMPORT (filename/size/sha256)
-      10. 不重启进程, 改连接失效 + 下次请求重连 (CC R19 增量风险 #3)
+      3. R1: 上传大小预检 + 流式截断 (ENV LLM_ROUTER_BACKUP_MAX_UPLOAD_MB, 默认 500MB)
+      4. 流式读上传 → 临时 tar.gz
+      5. F3: 验证 tarfile + 路径穿越 + symlink 检查
+      6. 自动备份当前 data/ → data/.backup/{ts}/
+      7. F1: 关闭 app 级持久 store 连接 (防 os.replace 后数据漂移)
+      8. R4 Phase 1: 全部 db 先 integrity_check, 收集 valid_dbs
+      9. R3: checkpoint 当前 db 静默吞错 → audit log
+      10. R4 Phase 2: 全过才批量 replace, 任一 os.replace 失败回滚 (从 backup tar)
+      11. audit log BACKUP_IMPORT (filename/size/sha256/restored/integrity_errors)
+      12. 不重启进程, store 下次请求自动 reconnect
 
     Returns:
-        {"status": "ok", "restored_files": int, "backup_id": str, "sha256": str}
+        {"status": "ok"|"partial", "restored_files": int, "backup_id": str, "sha256": str}
     """
     import hashlib
     import shutil
     import sqlite3
     import tempfile
 
+    # R20 R1: max upload size (DoS 防护, ENV 可覆盖, 默认 500MB — Codex 共识)
+    _MAX_UPLOAD_MB = int(os.environ.get("LLM_ROUTER_BACKUP_MAX_UPLOAD_MB", "500"))
+    _MAX_UPLOAD_BYTES = _MAX_UPLOAD_MB * 1024 * 1024
+
     if not confirm:
         raise HTTPException(status_code=403, detail="Import requires confirmation (set confirm=true)")
 
+    # R20 R1: Content-Length 预检 (如客户端提供)
+    cl = backup_file.headers.get("content-length") if hasattr(backup_file, "headers") else None
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Upload too large: {int(cl)} bytes exceeds max {_MAX_UPLOAD_MB} MB",
+                )
+        except (ValueError, TypeError):
+            pass  # 非数字 Content-Length 忽略, 走流式计数
+
     # 1. 流式读上传到临时 tar.gz
     data_dir = Path(__file__).resolve().parents[3] / "data"
+    # R20 F2: ENV 覆盖 data_dir (测试注入用, 默认 None = 用默认路径)
+    _env_data_dir = os.environ.get("LLM_ROUTER_BACKUP_DATA_DIR")
+    if _env_data_dir:
+        data_dir = Path(_env_data_dir)
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", prefix="r19-import-")
     os.close(tmp_fd)
 
@@ -1489,17 +1512,31 @@ async def import_backup(
     try:
         with open(tmp_path, "wb") as out:
             while chunk := await backup_file.read(8192):
+                file_size += len(chunk)
+                # R20 R1: 流式截断兜底
+                if file_size > _MAX_UPLOAD_BYTES:
+                    out.close()
+                    os.unlink(tmp_path)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds max size ({_MAX_UPLOAD_MB} MB)",
+                    )
                 out.write(chunk)
                 sha256.update(chunk)
-                file_size += len(chunk)
         sha256_hex = sha256.hexdigest()
 
-        # 2. 验证 tarfile + 路径穿越
+        # 2. F3 + R19: 验证 tarfile + 路径穿越 + symlink
         try:
             with tarfile.open(tmp_path, "r:gz") as tar:
                 members = tar.getmembers()
                 for m in members:
-                    # 路径穿越: 不能含 .. 或绝对路径
+                    # F3 R20: symlink 检查 — 防 admin 用 symlink 提权读外部文件
+                    if m.issym() or m.islnk():
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unsafe symlink in tar: {m.name} (refuses symlinks for safety)",
+                        )
+                    # R19: 路径穿越: 不能含 .. 或绝对路径
                     if ".." in m.name or m.name.startswith("/") or "\\" in m.name:
                         raise HTTPException(
                             status_code=400,
@@ -1523,24 +1560,42 @@ async def import_backup(
         else:
             backup_saved = "(empty data dir, no backup)"
 
-        # 4. WAL checkpoint + 关闭连接 + 原子替换
+        # 4. R20 F1: 关闭 app 级持久 store 连接 (防 os.replace 后数据漂移)
+        # admin 路由内的 _get_health_store 等是 per-request 短生命周期, 不需要处理
+        # 这里处理主 app module-level TraceStore/HealthStore/LedgerStore (在 app.py _store_instances 注册)
+        try:
+            from llm_router.app import _store_instances
+            for _store_ref in _store_instances:
+                _s = _store_ref()
+                if _s is not None and hasattr(_s, "reconnect"):
+                    try:
+                        await _s.reconnect()
+                    except Exception:
+                        pass  # reconnect 失败不阻断 (e.g. store 未 init)
+        except ImportError:
+            pass  # 非 app 上下文 (测试) 跳过
+
+        # 5. R20 R4 Phase 1: 全部 db 先 integrity_check, 收集 valid_dbs
+        # R20 R3: checkpoint 静默吞错 → audit log
         db_files = ["trace.db", "health.db", "scanner.db", "ledger.db", "circuit.db", "keys.db"]
         restored_count = 0
         integrity_errors = []
+        checkpoint_failures = []  # R3: 记录 checkpoint 失败的 db
+        valid_dbs: list[tuple[str, Path, Path]] = []
         for db_name in db_files:
             target_db = data_dir / db_name
             source_db = Path(extract_dir) / "data" / db_name
             if not source_db.exists():
                 continue
-            # 4a. checkpoint 当前 db (清空 -wal/-shm)
+            # R3: checkpoint 当前 db (损坏 db 不阻断恢复, 但记录到 audit log)
             if target_db.exists():
                 try:
                     conn = sqlite3.connect(str(target_db))
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                     conn.close()
-                except sqlite3.DatabaseError:
-                    pass  # 损坏 db 不阻断恢复
-            # 4b. integrity_check 新 db
+                except sqlite3.DatabaseError as e:
+                    checkpoint_failures.append(f"{db_name}: {e}")
+            # integrity_check 源 db
             try:
                 chk_conn = sqlite3.connect(str(source_db))
                 result = chk_conn.execute("PRAGMA integrity_check").fetchone()
@@ -1548,19 +1603,37 @@ async def import_backup(
                 if result and result[0] != "ok":
                     integrity_errors.append(f"{db_name}: {result[0]}")
                     continue
+                valid_dbs.append((db_name, source_db, target_db))
             except sqlite3.DatabaseError as e:
                 integrity_errors.append(f"{db_name}: {e}")
                 continue
-            # 4c. 原子替换 (POSIX rename 保证一致性)
-            os.replace(str(source_db), str(target_db))
-            # 4d. 清残留 -wal/-shm (新 db 重建)
-            for suf in ("-wal", "-shm"):
-                wal_or_shm = target_db.with_name(target_db.name + suf)
-                if wal_or_shm.exists():
-                    wal_or_shm.unlink()
-            restored_count += 1
 
-        # 5. audit log (CC R19 增量风险 #2: 加 filename/size/sha256)
+        # 6. R20 R4 Phase 2: 全过才批量替换, 任一失败回滚
+        replaced_in_this_run: list[Path] = []
+        if not integrity_errors:
+            for db_name, source_db, target_db in valid_dbs:
+                try:
+                    os.replace(str(source_db), str(target_db))
+                    replaced_in_this_run.append(target_db)
+                    # 清残留 -wal/-shm (新 db 重建)
+                    for suf in ("-wal", "-shm"):
+                        wal_or_shm = target_db.with_name(target_db.name + suf)
+                        if wal_or_shm.exists():
+                            wal_or_shm.unlink()
+                    restored_count += 1
+                except OSError as e:
+                    # R20 R4: os.replace 失败 → 回滚已替换的 db (从 backup tar)
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error("import_backup: os.replace failed for %s: %s — rolling back", db_name, e)
+                    _restore_from_backup(replaced_in_this_run, backup_root / "data.tar.gz", data_dir)
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Atomic replace failed for {db_name}: {e}. "
+                               f"Rolled back {len(replaced_in_this_run)} files from backup.",
+                    )
+
+        # 7. audit log (R19 加 filename/size/sha256, R20 加 checkpoint_failures)
         get_audit_logger().log("admin", "BACKUP_IMPORT", {
             "confirmed": True,
             "filename": backup_file.filename or "<unknown>",
@@ -1569,15 +1642,15 @@ async def import_backup(
             "restored_db_count": restored_count,
             "backup_id": backup_id,
             "integrity_errors": integrity_errors,
+            "checkpoint_failures": checkpoint_failures,  # R20 R3
         })
 
-        # 6. 清理临时目录
+        # 8. 清理临时目录
         shutil.rmtree(extract_dir, ignore_errors=True)
         os.unlink(tmp_path)
 
-        # 7. 不重启进程 (CC 风险 #3): store 层下次请求自动重连
-        # 当前 admin/app.py 无中央连接池, store 各自 sqlite3.connect(), 短生命周期
-        # 无需显式 invalidate, 进程内文件句柄已随 with-block 关闭
+        # 9. 不重启进程: store 层下次请求自动 reconnect (F1)
+        # admin 路由 store 是 per-request, 主 app store 已显式 reconnect 上方
 
         if integrity_errors:
             return {
@@ -1587,6 +1660,7 @@ async def import_backup(
                 "sha256": sha256_hex,
                 "backup_saved_to": backup_saved,
                 "integrity_errors": integrity_errors,
+                "checkpoint_failures": checkpoint_failures,  # R20 R3
             }
         return {
             "status": "ok",
@@ -1594,6 +1668,7 @@ async def import_backup(
             "backup_id": backup_id,
             "sha256": sha256_hex,
             "backup_saved_to": backup_saved,
+            "checkpoint_failures": checkpoint_failures,  # R20 R3
         }
 
     except HTTPException:
@@ -1607,6 +1682,30 @@ async def import_backup(
             "error": str(e),
         })
         raise HTTPException(status_code=500, detail=f"Import failed: {e}")
+
+
+def _restore_from_backup(replaced: list[Path], backup_tar: Path, data_dir: Path) -> None:
+    """R20 R4: 从备份 tar.gz 恢复已替换的 db 文件 (os.replace 失败回滚).
+
+    只恢复 .db 文件;非 .db (e.g. -wal/-shm) 不恢复 (新 db 会重建).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    if not backup_tar.exists():
+        logger.error("_restore_from_backup: backup tar not found at %s", backup_tar)
+        return
+    try:
+        with tarfile.open(backup_tar, "r:gz") as tar:
+            for member in tar.getmembers():
+                target = data_dir / Path(member.name).name
+                if target in replaced and member.name.endswith(".db"):
+                    try:
+                        tar.extract(member, data_dir, set_attrs=False)
+                        logger.info("_restore_from_backup: restored %s", target.name)
+                    except Exception as e:
+                        logger.error("_restore_from_backup: failed to restore %s: %s", target.name, e)
+    except Exception as e:
+        logger.error("_restore_from_backup: failed to open backup tar %s: %s", backup_tar, e)
 
 
 @admin_app.get("/api/admin/backup/db-sizes")
