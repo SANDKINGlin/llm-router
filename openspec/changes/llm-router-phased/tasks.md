@@ -204,17 +204,17 @@ evidence:
   - Chart.js占位canvas元素
   - HTMX拉取数据端点占位
 
-- [ ] 3.5 实现请求量趋势图
+- [x] 3.5 实现请求量趋势图  _(Phase5 三方共识 B, 2026-08-05)_
   - 折线图显示24h请求量
   - 从/api/monitoring/trends拉取数据
   - Chart.js配置（时间轴/颜色/响应式）
 
-- [ ] 3.6 实现错误率分布图
+- [x] 3.6 实现错误率分布图  _(Phase5 三方共识 B, 2026-08-05)_
   - 柱状图显示provider错误率
   - 从/api/monitoring/errors拉取数据
   - 红色高亮错误率>5%的provider
 
-- [ ] 3.7 实现响应时间热图
+- [x] 3.7 实现响应时间热图  _(Phase5 三方共识 B, 2026-08-05)_
   - 热力图显示时段响应时间
   - 从/api/monitoring/latency拉取数据
   - 绿(快)/黄(中)/红(慢)色阶

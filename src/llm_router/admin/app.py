@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .auth import AuthMiddleware, generate_token, get_audit_logger
+from .auth import AuthMiddleware, generate_token, get_audit_logger, SecurityHeadersMiddleware
 from .secrets import SecretStore, create_secret_store
 from ..config import policy
 from .providers import provider_manager, ProviderCreate, ProviderUpdate, ProviderResponse, ProviderListResponse
@@ -38,6 +38,7 @@ admin_app = FastAPI(title="LLM Router Admin API", version="0.1.0")
 
 # 添加认证中间件
 admin_app.add_middleware(AuthMiddleware)
+admin_app.add_middleware(SecurityHeadersMiddleware)
 
 # 配置模板引擎
 templates = Jinja2Templates(directory="/home/lin/projects/llm-router/src/llm_router/ui/templates")
@@ -1833,6 +1834,183 @@ def _get_health_store():
     from llm_router.store.health_store import HealthStore
     data_dir = Path(__file__).resolve().parents[3] / "data"
     return HealthStore(data_dir / "health.db")
+
+
+
+
+# ===== 监控观测接口 — Phase5 (3.5/3.6/3.7 monitoring charts) =====
+
+@admin_app.get("/api/admin/metrics/trends")
+async def get_metrics_trends():
+    """24h 请求量趋势 (3.5 monitoring.html 折线图数据源).
+
+    返回 hourly buckets 24 个数据点 (按 trace.db trace_hot 表 ts 字段聚合).
+    当前实现: 尝试从 trace.db 读最近 24h, 无数据时返回 24 个 0 占位 (前端空图).
+    """
+    from collections import Counter
+    from datetime import datetime, timedelta
+    import sqlite3
+
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    trace_path = data_dir / "trace.db"
+    now = datetime.now()
+    cutoff = (now - timedelta(hours=24)).isoformat()
+
+    buckets = [{"hour": i, "count": 0} for i in range(24)]
+
+    if not trace_path.exists():
+        return {"trends": buckets, "total_24h": 0, "data_source": "empty"}
+
+    try:
+        conn = sqlite3.connect(str(trace_path))
+        cur = conn.execute(
+            "SELECT created_at FROM trace_hot WHERE created_at >= ?",
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        if not rows:
+            return {"trends": buckets, "total_24h": 0, "data_source": "empty"}
+
+        hour_counter = Counter()
+        for (ts_str,) in rows:
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                hours_ago = int((now - ts).total_seconds() // 3600)
+                if 0 <= hours_ago < 24:
+                    hour_counter[23 - hours_ago] += 1
+            except (ValueError, TypeError):
+                continue
+
+        for hour_idx, count in hour_counter.items():
+            buckets[hour_idx]["count"] = count
+
+        return {"trends": buckets, "total_24h": sum(hour_counter.values()),
+                "data_source": "trace.db"}
+    except Exception as e:
+        return {"trends": buckets, "total_24h": 0,
+                "data_source": "error", "error": str(e)}
+
+
+@admin_app.get("/api/admin/metrics/errors")
+async def get_metrics_errors():
+    """Provider 错误率分布 (3.6 monitoring.html 柱状图数据源).
+
+    返回每个 provider 24h 错误率 (0.0-1.0), 红色高亮 >5%.
+    当前实现: 从 trace.db 读 status != 200 + 总数.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    trace_path = data_dir / "trace.db"
+    now = datetime.now()
+    cutoff = (now - timedelta(hours=24)).isoformat()
+
+    if not trace_path.exists():
+        providers = [p.name for p in policy().providers]
+        return {"errors": [{"provider": p, "error_rate": 0.0, "total": 0, "errors": 0}
+                           for p in providers], "data_source": "empty"}
+
+    try:
+        conn = sqlite3.connect(str(trace_path))
+        cur = conn.execute(
+            "SELECT provider, result, COUNT(*) FROM trace_hot WHERE created_at >= ? GROUP BY provider, result",
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        per_provider = {}
+        for provider, result, count in rows:
+            if provider not in per_provider:
+                per_provider[provider] = {"total": 0, "errors": 0}
+            per_provider[provider]["total"] += count
+            # result 字段: 'success' / 'error' / 'rate_limited' 等字符串
+            if result and result != "success":
+                per_provider[provider]["errors"] += count
+
+        errors = []
+        for provider, stats in per_provider.items():
+            total = stats["total"]
+            err_count = stats["errors"]
+            rate = err_count / total if total > 0 else 0.0
+            errors.append({
+                "provider": provider,
+                "error_rate": round(rate, 4),
+                "total": total,
+                "errors": err_count,
+            })
+
+        return {"errors": errors, "data_source": "trace.db"}
+    except Exception as e:
+        providers = [p.name for p in policy().providers]
+        return {"errors": [{"provider": p, "error_rate": 0.0, "total": 0, "errors": 0}
+                           for p in providers], "data_source": "error", "error": str(e)}
+
+
+@admin_app.get("/api/admin/metrics/latency")
+async def get_metrics_latency():
+    """响应时间热图 (3.7 monitoring.html 热力图数据源).
+
+    返回 24h x 8 时段 = 192 数据点 (latency_ms p95).
+    当前实现: 从 trace.db 读 latency_ms 按小时聚合 (8 时段 = 3h/段).
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    data_dir = Path(__file__).resolve().parents[3] / "data"
+    trace_path = data_dir / "trace.db"
+    now = datetime.now()
+    cutoff = (now - timedelta(hours=24)).isoformat()
+
+    # 24 hours × 8 buckets per hour = 192 cells
+    cells = []
+    for h in range(24):
+        for b in range(8):
+            cells.append({"hour": h, "bucket": b, "p95_ms": 0})
+
+    if not trace_path.exists():
+        return {"latency": cells, "data_source": "empty"}
+
+    try:
+        conn = sqlite3.connect(str(trace_path))
+        cur = conn.execute(
+            "SELECT created_at, latency FROM trace_hot WHERE created_at >= ? AND latency IS NOT NULL",
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        per_cell = {}
+        for ts_str, lat in rows:
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                hours_ago = int((now - ts).total_seconds() // 3600)
+                bucket = int(((now - ts).total_seconds() % 3600) // 450)  # 8 buckets × 450s
+                if 0 <= hours_ago < 24 and 0 <= bucket < 8:
+                    key = (23 - hours_ago, bucket)
+                    if key not in per_cell:
+                        per_cell[key] = []
+                    per_cell[key].append(lat)
+            except (ValueError, TypeError):
+                continue
+
+        # 计算 p95 per cell
+        for key, lats in per_cell.items():
+            lats_sorted = sorted(lats)
+            p95_idx = int(len(lats_sorted) * 0.95)
+            p95 = lats_sorted[p95_idx] if p95_idx < len(lats_sorted) else lats_sorted[-1]
+            # find matching cell
+            for cell in cells:
+                if cell["hour"] == key[0] and cell["bucket"] == key[1]:
+                    cell["p95_ms"] = int(p95)
+                    break
+
+        return {"latency": cells, "data_source": "trace.db"}
+    except Exception as e:
+        return {"latency": cells, "data_source": "error", "error": str(e)}
 
 
 @admin_app.get("/api/admin/health/status")

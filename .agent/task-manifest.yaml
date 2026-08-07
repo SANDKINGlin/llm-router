@@ -1,25 +1,39 @@
 task_manifest:
-  task_id: r16-user-soft-delete
+  task_id: phase5-monitoring-charts
   date: 2026-08-05
-  branch: wt/r16-user-soft-delete-20260805
+  branch: wt/phase5-monitoring-charts-20260805
   base_commit: master HEAD (06d943a)
-  parent_slice: r13-rate-limits (efc552f)
+  parent_slice: phase4-r13-mark-complete (commit d81bdb7 — 未 push, 待 Phase5 同步后合并)
   scope_summary: |
-    R16 切片: user_roles.is_active + 软删除
-    - ALTER TABLE user_roles ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1
-    - authenticate() 加 WHERE is_active = 1
-    - delete_user() 改软删除 (UPDATE is_active = 0)
-    - tests/unit/test_user_soft_delete.py (新, 4 测试)
+    3.5/3.6/3.7 monitoring.html 3 图表 (trend/error/latency) 实装.
+    后端: src/llm_router/admin/metrics_api.py 新建 + admin/app.py 注册 3 端点
+    前端: monitoring.html 加 Chart.js CDN + 3 canvas + Chart.js 配置
+    测试: tests/unit/test_metrics_api.py + tests/integration/test_monitoring_charts.py
+    同步: 合并 R13 commit d81bdb7 (标 4.5-4.15 11 [x])
   allowed_paths:
-    - src/llm_router/admin/auth_enhanced.py
-    - src/llm_router/store/key_store.py (schema migration)
-    - tests/unit/test_user_soft_delete.py
+    - src/llm_router/admin/app.py
+    - src/llm_router/admin/metrics_api.py
+    - src/llm_router/ui/templates/monitoring.html
+    - src/llm_router/ui/templates/base.html
+    - tests/unit/test_metrics_api.py
+    - tests/integration/test_monitoring_charts.py
+    - openspec/changes/llm-router-phased/tasks.md
+    - openspec/changes/llm-router-phased/specs/P0-3-frontend/spec.md
+    - openspec/changes/llm-router-phased/specs/P0-4-integration/spec.md
+    - .agent/task-manifest.yaml
   contract_owner: hermes-v5 (orchestrator)
-  verifier: codex (R2+R4+R7+R13+R16 共识)
-  user_authorization: 用户 2026-08-05 ("继续切片任务")
+  verifier: codex (R2 + R4 共识)
+  user_authorization: 用户 2026-08-05 ("调用三方辩证直到共识再执行")
   three_way_consensus:
-    R16:
-      hermes: Q1=A Q2=A Q3=A (2346B)
-      codex: pending
-      cc: pending
-  risk: LOW (ALTER ADD COLUMN DEFAULT 1 + 函数语义明确)
+    R4:
+      cc: Q1=A Q2=B Q3=A (1144B 摘要)
+      codex: Q1=A Q2=B Q3=A (1068B 摘要, 9181B 详细)
+      hermes: Q1=A Q2=B Q3=A (3566B 翻盘版, 跟 Codex 100% 一致)
+    R13:
+      cc: Q1=YES Q2=YES Q3=YES (743B)
+      codex: Q1=YES Q2=YES Q3=YES (886B 摘要)
+      hermes: Q1=YES Q2=YES Q3=YES (2467B)
+  risk: MED (前端 + 后端 + 测试 3 文件, B 类新功能切片)
+  follow_up:
+    chart.min.js_local_download: 必须本地下载 (R4 Q2=B 落地)
+    trace.db_data_source: trace_hot 表 ts/latency_ms 字段必真接
