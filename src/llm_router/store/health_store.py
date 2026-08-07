@@ -74,6 +74,15 @@ class HealthStore:
             await self._conn.close()
             self._conn = None
 
+    async def reconnect(self) -> None:
+        """R20 F1: 关闭后重建连接 (用于 import_backup 后的 store 重连).
+
+        os.replace 替换 .db 文件后, 旧 inode 上的连接持有 stale 句柄.
+        close() + init() 让下次 query 自动重建到新 inode.
+        """
+        await self.close()
+        await self.init()
+
     @property
     def _db(self) -> aiosqlite.Connection:
         if self._conn is None:

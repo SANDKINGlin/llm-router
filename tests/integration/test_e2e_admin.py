@@ -97,10 +97,12 @@ class TestBackupRestore:
         assert "warnings" in data
         assert "migration_needed" in data
 
+    @pytest.mark.skip(reason="R19: endpoint migrated to UploadFile + Form; see tests/unit/test_import_backup_upload.py")
     def test_import_backup_requires_file(self):
         c = _client()
         r = c.post("/admin/backup/import", json={"file_path": "nonexistent.tar.gz"})
-        # 应返回 400 或 500 (文件不存在)
+        # R19 之前: 测试名实不符 (只测 confirm 门, 不发文件). R19 改为 UploadFile 后,
+        # 此 json post 422, 仍假性通过 — 现标 skip, 真实覆盖在 test_import_backup_upload.py
         assert r.status_code in (400, 403, 422, 500), f"unexpected {r.status_code}: {r.text[:200]}"
 
 
