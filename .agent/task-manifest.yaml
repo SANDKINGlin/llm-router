@@ -1,27 +1,25 @@
 task_manifest:
-  task_id: r13-rate-limits-key-expiration
+  task_id: r16-user-soft-delete
   date: 2026-08-05
-  branch: wt/r13-rate-limits-key-expiration-20260805
+  branch: wt/r16-user-soft-delete-20260805
   base_commit: master HEAD (06d943a)
-  parent_slice: phase5-monitoring-charts (R12 4d322b4 已合未 push) + r7-admin-combo (3cdef7e)
+  parent_slice: r13-rate-limits (efc552f)
   scope_summary: |
-    R13 切片: 2 个 LOW 风险 follow-up
-    1. rate-limits 端点接 trace.db (R11 字段修正确认后可用)
-    2. key expiration 警告 (ALTER TABLE keys ADD expires_at + 真查函数)
-    测试: tests/unit/test_rate_limits.py + tests/unit/test_key_expiration.py
+    R16 切片: user_roles.is_active + 软删除
+    - ALTER TABLE user_roles ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1
+    - authenticate() 加 WHERE is_active = 1
+    - delete_user() 改软删除 (UPDATE is_active = 0)
+    - tests/unit/test_user_soft_delete.py (新, 4 测试)
   allowed_paths:
-    - src/llm_router/admin/app.py
-    - src/llm_router/admin/keys.py
+    - src/llm_router/admin/auth_enhanced.py
     - src/llm_router/store/key_store.py (schema migration)
-    - tests/unit/test_rate_limits.py
-    - tests/unit/test_key_expiration.py
-    - openspec/changes/llm-router-phased/tasks.md
+    - tests/unit/test_user_soft_delete.py
   contract_owner: hermes-v5 (orchestrator)
-  verifier: codex (R2 + R4 + R7 + R13 共识)
+  verifier: codex (R2+R4+R7+R13+R16 共识)
   user_authorization: 用户 2026-08-05 ("继续切片任务")
   three_way_consensus:
-    R13:
-      hermes: Q1=A Q2=A Q3=A (2571B)
+    R16:
+      hermes: Q1=A Q2=A Q3=A (2346B)
       codex: pending
       cc: pending
-  risk: LOW (2 个小改动, 字段已知)
+  risk: LOW (ALTER ADD COLUMN DEFAULT 1 + 函数语义明确)
