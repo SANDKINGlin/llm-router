@@ -1,0 +1,15 @@
+task: R25 master baseline follow-up (F1 + F3 派 D Alternative)
+date: 2026-08-08
+type: fix(admin)
+risk: LOW
+agent: hermes (编排) + codex (5 轮短 brief) + opencode (2 轮)
+consensus: 3/3 派 D Alternative (P149 第二轮 + P152 第三轮, R3 2:1 → R4 3/3, Codex R4 翻盘 + Hermes R4 翻盘)
+scope:
+  - 8 处 mkdir 加 is_symlink 守卫 (F1)
+  - R20 归档追写 1 行 (F3)
+pre-existing_fail (not in scope, R18 PR #21 漏 schema migration):
+  - test_admin_auth 4 fail (R18 schema-code is_active 失配, F2 defer R26)
+  - test_phase1 1 fail (5 store 创 ledger.db 路径不全)
+  - test_monitoring_charts 3 fail (WT path bug)
+reviewers: codex-r6 + opencode-r6 + hermes-r6 (P130 MD5 互异 3/3)
+follow-up: F2 R18 schema 治本 (R26) + F5 6 WT 清理 (R26)

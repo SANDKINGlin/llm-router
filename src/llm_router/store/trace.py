@@ -186,6 +186,8 @@ class TraceStore:
 
     async def init(self) -> None:
         """建库 + 表 + 索引 + WAL pragma。幂等(可重复调)。"""
+        if Path(self._db_path).parent.is_symlink():
+            Path(self._db_path).parent.unlink()
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self._db_path, isolation_level=None)
         self._conn.row_factory = aiosqlite.Row

@@ -122,6 +122,8 @@ class ScannerStore:
         self._conn: Optional[aiosqlite.Connection] = None
 
     async def init(self) -> None:
+        if Path(self._db_path).parent.is_symlink():
+            Path(self._db_path).parent.unlink()
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self._db_path, isolation_level=None)
         self._conn.row_factory = aiosqlite.Row

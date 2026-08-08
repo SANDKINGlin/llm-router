@@ -146,6 +146,8 @@ class CircuitBreaker:
     # ---------- persistence (keys only) ----------
 
     def _init_db(self) -> None:
+        if self.db_path.parent.is_symlink():
+            self.db_path.parent.unlink()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode = WAL")

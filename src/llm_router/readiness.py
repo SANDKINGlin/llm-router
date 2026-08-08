@@ -41,6 +41,8 @@ def check_ready(
 
     # ② data 目录可写:探针写删(比 os.access 诚实,能抓满盘/权限/挂载问题)。
     try:
+        if ddir.is_symlink():
+            ddir.unlink()
         ddir.mkdir(parents=True, exist_ok=True)
         probe = ddir / _PROBE_FILE
         probe.write_text("ok")

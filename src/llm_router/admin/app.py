@@ -1553,6 +1553,8 @@ async def import_backup(
         # 3. 自动备份当前 data/ → data/.backup/{ts}/
         backup_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_root = data_dir / ".backup" / backup_id
+        if backup_root.is_symlink():
+            backup_root.unlink()
         backup_root.mkdir(parents=True, exist_ok=True)
         if data_dir.exists() and any(data_dir.iterdir()):
             backup_tar = backup_root / "data.tar.gz"
