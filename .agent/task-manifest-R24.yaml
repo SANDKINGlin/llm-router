@@ -1,0 +1,16 @@
+task: R24 master baseline data symlink 修复 (派 A 最小)
+date: 2026-08-08
+type: fix(admin)
+risk: LOW
+agent: hermes (编排) + codex (4 轮短 brief) + opencode (1 轮完整)
+consensus: 3/3 派 A 最小 (P149 第二轮强制收敛)
+scope:
+  - data/ (git tracked broken symlink 删除)
+  - .gitignore (加 data/)
+pre-existing_fail (not in scope, R18 PR #21 漏 schema migration):
+  - test_admin_auth 3 fail (user_roles 表)
+  - test_phase1 1 fail (ledger.db 创表)
+  - test_monitoring_charts 3 fail (WT path bug, 跟 R24 无关)
+  - test_login_logged (R20 留 flake)
+follow-up: F1 mkdir 加固 + F2 R18 schema migration + F3 R20 留 flake + F4 R20 归档同步 + F5 6 WT 清理
+reviewers: codex-r4 + opencode + hermes-r4 (P130 MD5 互异 8/8)
