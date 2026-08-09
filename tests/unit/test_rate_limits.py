@@ -47,16 +47,16 @@ class TestRateLimitsEndpoint:
             assert "data_source" in data
             assert data["data_source"] in ("empty", "trace.db", "error")
             # schema 必含
-            for key in ("total_429", "providers", "last_24h"):
+            for key in ("total_errors_24h", "providers", "last_24h"):
                 assert key in data
 
     def test_endpoint_empty_when_no_rate_limited(self):
-        """trace_hot 无 rate_limited 时, total_429=0 + data_source=empty."""
+        """trace_hot 无 rate_limited 时, total_errors_24h=0 + data_source=empty."""
         from llm_router.admin.app import admin_app
         with TestClient(admin_app) as c:
             r = c.get("/api/admin/metrics/rate-limits")
             data = r.json()
-            assert data["total_429"] == 0
+            assert data["total_errors_24h"] == 0
             assert data["providers"] == {}
             assert data["data_source"] in ("empty", "trace.db", "error")
 
