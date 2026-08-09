@@ -49,7 +49,12 @@ try:
 except ImportError:
     admin_subapp = None
 
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_DATA_DIR = Path(
+    os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[2] / "data"),
+    )
+)
 _SCANNER_DB = _DATA_DIR / "scanner.db"
 
 

@@ -8,12 +8,18 @@ CB 恢复:CircuitBreaker 在 app import 期 _init_db+_load_state 已跑;app 起�
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Callable
 
 from .config import Policy, policy
 
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_DATA_DIR = Path(
+    os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[2] / "data"),
+    )
+)
 _PROBE_FILE = ".readiness_probe"
 
 

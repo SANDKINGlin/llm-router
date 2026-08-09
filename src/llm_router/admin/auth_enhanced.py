@@ -9,6 +9,8 @@ from functools import wraps
 from fastapi import HTTPException, Request
 import sqlite3
 import hashlib
+import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +23,14 @@ TOKEN_EXPIRATION_HOURS = 24
 class EnhancedAuthManager:
     """增强认证管理器 - 处理JWT token、权限验证、会话管理。"""
 
-    def __init__(self, db_path: str = "/home/lin/projects/llm-router/data/keys.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | Path | None = None):
+        data_dir = Path(
+            os.environ.get(
+                "LLM_ROUTER_DATA_DIR",
+                str(Path(__file__).resolve().parents[3] / "data"),
+            )
+        )
+        self.db_path = str(Path(db_path) if db_path is not None else data_dir / "keys.db")
 
     def get_connection(self) -> sqlite3.Connection:
         """Get database connection with row factory."""
