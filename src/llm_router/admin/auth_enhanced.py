@@ -15,7 +15,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # JWT配置
-SECRET_KEY = "llm-router-admin-secret-key-2026"  # TODO: 移到环境变量
+SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")  # 跟 auth.py AuthMiddleware 对齐 (F10-4 cherry-pick, R32 三方共识 6 DISCARD + 1 cherry-pick)
 ALGORITHM = "HS256"
 TOKEN_EXPIRATION_HOURS = 24
 
