@@ -42,7 +42,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app, secret_key: str | None = None):
         super().__init__(app)
-        self.secret_key = secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")
+        self.secret_key = secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key-32bytes-aaaa-1111")
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # 跳过健康检查和登录端点
@@ -165,7 +165,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 def generate_token(secret_key: str | None = None) -> str:
     """生成Bearer Token（24h有效）。"""
-    key = secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key")
+    key = secret_key or os.environ.get("ADMIN_SECRET_KEY", "dev-secret-key-32bytes-aaaa-1111")
     timestamp = int(time.time())
 
     signature = hmac.new(

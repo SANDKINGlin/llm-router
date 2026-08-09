@@ -5,6 +5,7 @@
 - 测 /admin/monitoring HTML 模板含 3 canvas 元素
 - 测 端点无数据时返回 24h buckets 占位 (前端空图)
 """
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
@@ -110,7 +111,7 @@ class TestMonitoringPageTemplate:
 
     def test_monitoring_html_has_3_canvas(self):
         """3.5/3.6/3.7 对应 chart-trends/chart-errors/chart-latency canvas."""
-        template_path = "/home/lin/projects/llm-router-wt-p5-monitoring-charts/src/llm_router/ui/templates/monitoring.html"
+        template_path = str(Path(__file__).resolve().parents[2] / "src/llm_router/ui/templates/monitoring.html")
         with open(template_path) as f:
             content = f.read()
         assert 'id="chart-trends"' in content
@@ -119,7 +120,7 @@ class TestMonitoringPageTemplate:
 
     def test_monitoring_html_has_chart_loader(self):
         """Chart.js 加载逻辑 (本地 /static/js/chart.min.js, R10 实施后 100% 本地)."""
-        template_path = "/home/lin/projects/llm-router-wt-p5-monitoring-charts/src/llm_router/ui/templates/monitoring.html"
+        template_path = str(Path(__file__).resolve().parents[2] / "src/llm_router/ui/templates/monitoring.html")
         with open(template_path) as f:
             content = f.read()
         assert '/static/js/chart.min.js' in content  # R4 Q2=B 本地
@@ -127,7 +128,7 @@ class TestMonitoringPageTemplate:
 
     def test_monitoring_html_calls_3_endpoints(self):
         """3 fetch 调用对应 3 端点."""
-        template_path = "/home/lin/projects/llm-router-wt-p5-monitoring-charts/src/llm_router/ui/templates/monitoring.html"
+        template_path = str(Path(__file__).resolve().parents[2] / "src/llm_router/ui/templates/monitoring.html")
         with open(template_path) as f:
             content = f.read()
         assert '/api/admin/metrics/trends' in content

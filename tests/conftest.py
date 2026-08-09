@@ -62,6 +62,24 @@ def _checkpoint_data_dbs() -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _init_placeholder_dbs() -> Iterator[None]:
+    """R35 (2026-08-09): 防 phase1_load_and_recovery test_lifespan_with_no_probe_targets_zero_pollution
+    因 production data dir 缺 trace.db/ledger.db/circuit.db/health.db 而假绿.
+    session 开跑前预建 4 个空 SQLite 占位 db, 让测试能在 conftest 清 key 的环境
+    下仍能跑通 sanity check.
+    """
+    os.makedirs("data", exist_ok=True)
+    for name in ("trace.db", "ledger.db", "circuit.db", "health.db", "keys.db", "scanner.db"):
+        path = os.path.join("data", name)
+        if not os.path.exists(path):
+            conn = sqlite3.connect(path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
+            conn.close()
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _wal_checkpoint_guard() -> Iterator[None]:
     """会话开跑前 + 跑完后 checkpoint data/*.db(防脏 WAL 间歇性挂起,见 _checkpoint_data_dbs)。"""
     _checkpoint_data_dbs()
