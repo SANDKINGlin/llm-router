@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('view', 'operate', 'admin')),
     permissions TEXT,  -- JSON array of specific permissions
+    is_active BOOLEAN NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

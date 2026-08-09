@@ -1,6 +1,24 @@
 """Admin WebUI认证和审计日志集成测试。"""
+import hashlib
+import os
+import sqlite3
+import tempfile
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
+
+# admin_app / EnhancedAuthManager 均在 import 期解析数据路径，必须在 import 前注入。
+_TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="llm-router-admin-auth-"))
+os.environ["LLM_ROUTER_DATA_DIR"] = str(_TEST_DATA_DIR)
+_SCHEMA = Path(__file__).resolve().parents[2] / "src/llm_router/admin/migrations/001_initial_schema.sql"
+with sqlite3.connect(_TEST_DATA_DIR / "keys.db") as _conn:
+    _conn.executescript(_SCHEMA.read_text())
+    _conn.execute(
+        "UPDATE user_roles SET password_hash = ? WHERE username = 'admin'",
+        (hashlib.sha256(b"admin").hexdigest(),),
+    )
+    _conn.commit()
 
 from llm_router.admin.app import admin_app
 from llm_router.admin.auth import _audit_logger
