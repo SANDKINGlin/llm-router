@@ -1772,62 +1772,106 @@ async def get_db_sizes():
 
 @admin_app.get("/api/admin/metrics/circuit-breakers")
 async def get_circuit_breakers():
-    """获取所有provider熔断状态。"""
-    # TODO: 需要Cascade实例访问熔断器状态
-    # 这里返回模拟数据
+    """获取所有 provider 熔断器真实状态 (R36 接入 circuit_keys 表).
+
+    返回每个 provider 当前 state, hard_failures, soft_failures, half_open_failures,
+    opened_at, next_probe_at, probe_in_flight. 真实读 circuit.db, 无数据回退到 policy providers 空状态.
+    """
+    import os as _os
+    data_dir = Path(_os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[3] / "data"),
+    ))
+    circuit_path = data_dir / "circuit.db"
+
     providers = [p.name for p in policy().providers]
-    return {
-        "circuit_breakers": [
-            {
-                "provider": p,
-                "state": "CLOSED",
-                "remaining_cooldown": 0,
-                "failure_count": 0,
-            }
+    breakers = []
+    if not circuit_path.exists():
+        return {"circuit_breakers": [
+            {"provider": p, "state": "UNKNOWN", "hard_failures": 0,
+             "soft_failures": 0, "half_open_failures": 0, "opened_at": None,
+             "next_probe_at": None, "probe_in_flight": 0}
             for p in providers
-        ]
-    }
+        ], "data_source": "empty"}
+
+    try:
+        conn = sqlite3.connect(str(circuit_path))
+        rows = conn.execute(
+            "SELECT provider, state, hard_failures, soft_failures, "
+            "half_open_failures, opened_at, next_probe_at, probe_in_flight "
+            "FROM circuit_keys"
+        ).fetchall()
+        conn.close()
+        for (p, state, hf, sf, hof, opened, next_probe, pif) in rows:
+            breakers.append({
+                "provider": p, "state": state,
+                "hard_failures": hf, "soft_failures": sf,
+                "half_open_failures": hof, "opened_at": opened,
+                "next_probe_at": next_probe, "probe_in_flight": pif,
+            })
+        seen = {b["provider"] for b in breakers}
+        for p in providers:
+            if p not in seen:
+                breakers.append({
+                    "provider": p, "state": "CLOSED",
+                    "hard_failures": 0, "soft_failures": 0,
+                    "half_open_failures": 0, "opened_at": None,
+                    "next_probe_at": None, "probe_in_flight": 0,
+                })
+        return {"circuit_breakers": breakers, "data_source": "circuit.db"}
+    except Exception as e:
+        return {"circuit_breakers": [], "data_source": "error", "error": str(e)}
 
 
 @admin_app.get("/api/admin/metrics/rate-limits")
 async def get_rate_limits():
-    """429 限流统计 (R13 实施 — 接 trace.db 真实数据).
+    """429 / error 限流统计 (R13 实施 + R36 ENV 注入 + 扩 error 状态).
 
-    返回 24h 内 rate_limited 记录数, 按 provider 分组.
-    SQL: `SELECT provider, COUNT(*) FROM trace_hot WHERE result = 'rate_limited' AND created_at >= ?`
+    R36 改动:
+      - data_dir 走 LLM_ROUTER_DATA_DIR ENV (跟 R29 修复一致)
+      - 扩 query: 不只 result='rate_limited', 还包括 result='error' 和 result != 'success'
+        (rate_limited 是 429 状态, error 是一般失败, 合并统计让前端有数据看)
     """
-    data_dir = Path(__file__).resolve().parents[3] / "data"
+    data_dir = Path(os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[3] / "data"),
+    ))
     trace_path = data_dir / "trace.db"
     now = datetime.now()
     cutoff = (now - timedelta(hours=24)).isoformat()
 
     if not trace_path.exists():
-        return {"total_429": 0, "providers": {}, "last_24h": [],
+        return {"total_errors_24h": 0, "providers": {}, "last_24h": [],
                 "data_source": "empty"}
 
     try:
         conn = sqlite3.connect(str(trace_path))
         cur = conn.execute(
-            "SELECT provider, COUNT(*) FROM trace_hot WHERE result = 'rate_limited' AND created_at >= ? GROUP BY provider",
+            "SELECT provider, result, COUNT(*) FROM trace_hot "
+            "WHERE created_at >= ? AND (result = 'rate_limited' OR result = 'error' OR (result IS NOT NULL AND result != 'success')) "
+            "GROUP BY provider, result",
             (cutoff,),
         )
         rows = cur.fetchall()
         conn.close()
 
         per_provider = {}
+        per_provider_by_result = {}
         total = 0
-        for provider, count in rows:
-            per_provider[provider] = count
+        for provider, result, count in rows:
+            per_provider[provider] = per_provider.get(provider, 0) + count
+            per_provider_by_result.setdefault(provider, {})[result or "unknown"] = count
             total += count
 
         return {
-            "total_429": total,
+            "total_errors_24h": total,
             "providers": per_provider,
+            "providers_by_result": per_provider_by_result,
             "last_24h": [],
             "data_source": "trace.db" if total > 0 else "empty",
         }
     except Exception as e:
-        return {"total_429": 0, "providers": {}, "last_24h": [],
+        return {"total_errors_24h": 0, "providers": {}, "last_24h": [],
                 "data_source": "error", "error": str(e)}
 
 
@@ -1853,7 +1897,10 @@ async def get_metrics_trends():
     from datetime import datetime, timedelta
     import sqlite3
 
-    data_dir = Path(__file__).resolve().parents[3] / "data"
+    data_dir = Path(os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[3] / "data"),
+    ))
     trace_path = data_dir / "trace.db"
     now = datetime.now()
     cutoff = (now - timedelta(hours=24)).isoformat()
@@ -1905,7 +1952,10 @@ async def get_metrics_errors():
     import sqlite3
     from datetime import datetime, timedelta
 
-    data_dir = Path(__file__).resolve().parents[3] / "data"
+    data_dir = Path(os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[3] / "data"),
+    ))
     trace_path = data_dir / "trace.db"
     now = datetime.now()
     cutoff = (now - timedelta(hours=24)).isoformat()
@@ -1962,7 +2012,10 @@ async def get_metrics_latency():
     import sqlite3
     from datetime import datetime, timedelta
 
-    data_dir = Path(__file__).resolve().parents[3] / "data"
+    data_dir = Path(os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[3] / "data"),
+    ))
     trace_path = data_dir / "trace.db"
     now = datetime.now()
     cutoff = (now - timedelta(hours=24)).isoformat()
