@@ -86,3 +86,38 @@ def _wal_checkpoint_guard() -> Iterator[None]:
     yield
     _checkpoint_data_dbs()
 
+
+# ===== R39 (2026-08-10) 三方共识 A2 实施 =====
+# 修 test_circuit_breaker_status_accuracy + test_concurrent_same_key_executes_once
+# 2 个 pre-existing flaky test (单跑 PASS, 全 integration 5/5 fail = 100% 复现).
+# 三方共识 (Hermes+Codex+OpenCode, MD5 互异 3/3) 推荐 A2 = P158 + P140 + P167 3 修法叠加.
+#
+# ⚠️ 实施约束 (2026-08-10 第一版超时教训):
+# - 不加 _isolated_event_loop (autouse set_event_loop 跟 pytest-asyncio AUTO mode 冲突 → 60s timeout)
+# - 不 monkeypatch TestClient.__exit__ (改全局行为风险高, pytest-asyncio 内部用 TestClient 多次)
+# - 只加 P140 "data dir 隔离 fixture": 每条 test 临时 LLM_ROUTER_DATA_DIR 隔离 sqlite 写入,
+#   避免 circuit.db / health.db 等跨 test 状态污染 (跟 R29 R32 同样思路)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir_per_test(tmp_path, monkeypatch):
+    """R39 P140 实施: 每条 test 用 tmp_path 隔离 LLM_ROUTER_DATA_DIR.
+
+    修法 = 每条 test 自动建一个空 sqlite db dir, 避免前一条 test 残留的 WAL/lock
+    影响下一条. TestClient 走 LLM_ROUTER_DATA_DIR 读 circuit.db/health.db, 隔离后
+    各 test 状态完全干净.
+    """
+    data_dir = tmp_path / "r39_data"
+    data_dir.mkdir(exist_ok=True)
+    # 预建 R35 占位 db (跟 _init_placeholder_dbs 同步)
+    for name in ("trace.db", "ledger.db", "circuit.db", "health.db", "keys.db", "scanner.db"):
+        path = data_dir / name
+        if not path.exists():
+            conn = sqlite3.connect(str(path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
+            conn.close()
+    monkeypatch.setenv("LLM_ROUTER_DATA_DIR", str(data_dir))
+    # 给当前 test yield tmp data dir
+    yield str(data_dir)
+
