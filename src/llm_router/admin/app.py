@@ -549,8 +549,20 @@ async def delete_key(provider: str):
 
 
 @admin_app.post("/admin/keys/{provider}/rotate")
-async def rotate_key(provider: str, req: KeyRotate):
-    """轮换provider密钥（原子性替换，失败回滚）。"""
+async def rotate_key(
+    provider: str,
+    req: KeyRotate,
+    current_user: dict = Depends(get_current_user_with_permission("operate")),
+):
+    """轮换provider密钥（原子性替换，失败回滚）。
+
+    R32 治本: 端点 stub 永远不触发熔断器回滚, 跟 spec SHALL 违约 (key-management/spec.md:64).
+    R32 加 cascade.breaker.rollback 真调 (跟 R30 治本 trace 端点 precedent 同模式) + 鉴权.
+
+    spec SHALL:
+    - 成功轮换: 原子性替换密钥, 触发熔断器回滚, 返回200
+    - 轮换回滚: 失败自动回滚到旧密钥, 记录错误, 返回503 Service Unavailable
+    """
     # 验证provider存在
     providers = [p.name for p in policy().providers]
     if provider not in providers:
@@ -563,18 +575,28 @@ async def rotate_key(provider: str, req: KeyRotate):
         # 设置新密钥
         await secret_store.set(provider, req.new_key)
 
-        # TODO: 触发熔断器回滚（需要Cascade实例引用）
-        # cascade.apply_policy(...)
+        # R32 治本: 懒 import _cascade 单例 (避免循环, 跟 L2291 precedent 一致)
+        from ..app import _cascade as _production_cascade
+        cascade = _production_cascade
+        if cascade is not None and cascade.breaker is not None:
+            # 触发熔断器回滚 (reset 该 (provider, new_key) 状态为 CLOSED 全新起点)
+            cascade.breaker.rollback({(provider, req.new_key)})
 
-        get_audit_logger().log("admin", "ROTATE_KEY", {"provider": provider})
+        get_audit_logger().log("admin", "ROTATE_KEY", {"provider": provider, "user": current_user.get("username", "unknown")})
         return {"status": "rotated", "provider": provider}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        # 失败回滚
+        # 失败回滚 (按 spec "轮换回滚 scenario" 应返 503)
         if old_key:
-            await secret_store.set(provider, old_key)
+            try:
+                await secret_store.set(provider, old_key)
+            except Exception:
+                pass
 
         get_audit_logger().log("admin", "ROTATE_KEY_FAILED", {"provider": provider, "error": str(e)})
+        raise HTTPException(status_code=503, detail=f"密钥轮换失败: {str(e)}")
 
 
 # ===== Provider Management API =====

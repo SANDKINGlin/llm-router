@@ -101,6 +101,11 @@ class Cascade:
         """S2.8c:暴露 health_store(lifespan 用同一实例 init + 喂 prober,共享单例)。"""
         return self._health_store
 
+    @property
+    def breaker(self) -> CircuitBreaker:
+        """R32 暴露 breaker 供 admin rotate_key 端点触发熔断器回滚 (跟 spec SHALL 一致)."""
+        return self._breaker
+
     async def _ensure_store(self) -> None:
         """惰性幂等 init store(双重检查锁 + asyncio.Lock,并发安全)。
 
