@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-REPO = Path("/home/lin/projects/llm-router-wt-r30-trace-endpoint")
+REPO = Path("/home/lin/projects/llm-router")  # R31: was wt-r30-trace-endpoint (WT deleted, same as R28c/R38 precedent)
 SCHEMA = (REPO / "src/llm_router/admin/migrations/001_initial_schema.sql").read_text()
 TRACE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS trace (
