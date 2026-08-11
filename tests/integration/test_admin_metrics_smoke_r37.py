@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-REPO = Path("/home/lin/projects/llm-router-wt-r37-smoke")
+REPO = Path("/home/lin/projects/llm-router")  # R28c: was wt-r37-smoke (WT deleted, same as R38 precedent)
 SCHEMA = (REPO / "src/llm_router/admin/migrations/001_initial_schema.sql").read_text()
 
 # monitoring.html 真实引用的 5 个 metrics URL

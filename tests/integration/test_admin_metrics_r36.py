@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-REPO = Path("/home/lin/projects/llm-router-wt-r36")
+REPO = Path("/home/lin/projects/llm-router")  # R28c: was wt-r36 (WT deleted, same as R38 precedent)
 SCHEMA = (REPO / "src/llm_router/admin/migrations/001_initial_schema.sql").read_text()
 
 
