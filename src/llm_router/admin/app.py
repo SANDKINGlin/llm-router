@@ -1882,6 +1882,19 @@ def _get_health_store():
     return HealthStore(data_dir / "health.db")
 
 
+def _get_trace_store():
+    """懒初始化 TraceStore (避免 import 期副作用). R30 治本 trace 端点 stub 走真查.
+
+    data_dir 走 LLM_ROUTER_DATA_DIR ENV (跟 R29 修复一致, 治本 fixture 隔离).
+    """
+    from llm_router.store.trace import TraceStore
+    data_dir = Path(os.environ.get(
+        "LLM_ROUTER_DATA_DIR",
+        str(Path(__file__).resolve().parents[3] / "data"),
+    ))
+    return TraceStore(data_dir / "trace.db")
+
+
 
 
 # ===== 监控观测接口 — Phase5 (3.5/3.6/3.7 monitoring charts) =====
@@ -2142,14 +2155,39 @@ async def get_probe_history(provider: str, current_user: dict = Depends(get_curr
 
 
 @admin_app.get("/api/admin/traces/{correlation_id}")
-async def get_trace(correlation_id: str):
-    """按correlation_id查询trace链路。"""
-    # TODO: 需要从TraceStore查询
-    return {
-        "correlation_id": correlation_id,
-        "hops": [],
-        "not_found": True,
-    }
+async def get_trace(
+    correlation_id: str,
+    current_user: dict = Depends(get_current_user_auth),
+):
+    """按correlation_id查询trace链路。R30 治本: 从 stub 改 TraceStore.get_chain 真查.
+
+    spec 早已 SHALL 要求 (admin-dashboard/spec.md trace链路追踪 requirement), R7 标完,
+    但端点 8-11 12:50 仍 stub 永远 not_found. R30 治本合规化.
+    """
+    store = _get_trace_store()
+    await store.init()
+    try:
+        rows = await store.get_chain(correlation_id)
+        hops = [
+            {
+                "trace_id": r.trace_id,
+                "provider": r.provider,
+                "result": r.result,
+                "latency": r.latency,
+                "cost": r.cost,
+                "created_at": r.created_at,
+                "parent_correlation_id": r.parent_correlation_id,
+            }
+            for r in rows
+        ]
+        return {
+            "correlation_id": correlation_id,
+            "hops": hops,
+            "count": len(hops),
+            "not_found": len(hops) == 0,
+        }
+    finally:
+        await store.close()
 
 
 # ===== 配置管理接口 =====
