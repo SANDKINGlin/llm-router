@@ -2070,45 +2070,54 @@ async def get_metrics_latency():
 
 @admin_app.get("/api/admin/health/status")
 async def get_health_status(current_user: dict = Depends(get_current_user_auth)):
-    """获取所有provider健康状态 (2.9 — 接 HealthStore 真数据)."""
+    """获取所有provider健康状态 (2.9 — 接 HealthStore 真数据).
+
+    R38 修复: store._db 是 property (非 context manager), 原代码 store._db() 报错
+    'Connection' object is not callable. 改为 store._db 直接拿 Connection.
+    """
     store = _get_health_store()
     await store.init()
     try:
-        rows = []
-        async with store._db() as db:
-            cursor = await db.execute(
-                "SELECT provider, alive, last_probe_at, latency_ms FROM health ORDER BY provider"
-            )
-            async for row in cursor:
-                rows.append({
-                    "provider": row[0],
-                    "alive": bool(row[1]),
-                    "last_probe": row[2],
-                    "latency_ms": row[3],
-                })
-        return {"providers": rows}
+        db = store._db
+        async with db.execute(
+            "SELECT provider, alive, last_probe_at, latency_ms FROM health ORDER BY provider"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {"providers": [
+            {
+                "provider": r[0],
+                "alive": bool(r[1]),
+                "last_probe": r[2],
+                "latency_ms": r[3],
+            }
+            for r in rows
+        ]}
     finally:
         await store.close()
 
 
 @admin_app.get("/api/admin/health/dead")
 async def get_dead_providers(current_user: dict = Depends(get_current_user_auth)):
-    """获取死亡 provider 列表 (2.9)."""
+    """获取死亡 provider 列表 (2.9).
+    
+    R38 修复: 同 get_health_status, store._db() 改 store._db.
+    """
     store = _get_health_store()
     await store.init()
     try:
-        rows = []
-        async with store._db() as db:
-            cursor = await db.execute(
-                "SELECT provider, last_probe_at, latency_ms FROM health WHERE alive = 0 ORDER BY last_probe_at DESC"
-            )
-            async for row in cursor:
-                rows.append({
-                    "provider": row[0],
-                    "last_probe": row[1],
-                    "latency_ms": row[2],
-                })
-        return {"dead": rows, "count": len(rows)}
+        db = store._db
+        async with db.execute(
+            "SELECT provider, last_probe_at, latency_ms FROM health WHERE alive = 0 ORDER BY last_probe_at DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {"dead": [
+            {
+                "provider": r[0],
+                "last_probe": r[1],
+                "latency_ms": r[2],
+            }
+            for r in rows
+        ], "count": len(rows)}
     finally:
         await store.close()
 
