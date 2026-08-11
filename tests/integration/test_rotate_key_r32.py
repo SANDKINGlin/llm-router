@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-REPO = Path("/home/lin/projects/llm-router-wt-r32-cb-rollback")
+REPO = Path("/home/lin/projects/llm-router")  # R33: was wt-r32-cb-rollback (WT deleted, same as R28c/R31 precedent)
 SCHEMA = (REPO / "src/llm_router/admin/migrations/001_initial_schema.sql").read_text()
 
 
