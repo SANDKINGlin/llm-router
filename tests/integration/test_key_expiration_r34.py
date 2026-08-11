@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-REPO = Path("/home/lin/projects/llm-router-wt-r34-key-expiration")
+REPO = Path("/home/lin/projects/llm-router")  # R35: was wt-r34-key-expiration (WT deleted, same as R28c/R31/R33/R35 precedent 5/5)
 SCHEMA = (REPO / "src/llm_router/admin/migrations/001_initial_schema.sql").read_text()
 
 
