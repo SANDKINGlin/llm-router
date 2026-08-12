@@ -1,7 +1,15 @@
 # P0-2-rest-api Specification
 
 ## Purpose
-TBD - created by archiving change llm-router-phased. Update Purpose after archive.
+REST API 端到端 (OpenAI 兼容 + admin API + 监控). FastAPI + Pydantic schema + JWT auth. P0-2 阶段交付, 跟 admin WebUI (P0-3) 共享后端.
+
+**R 链路映射**: R26 observability (circuit-keys / rate-limits / trends / errors / latency) + R30 trace endpoint
+
+---
+
+_(TBD 段已被 8-12 P+ 闭环任务补全, 见 /home/lin/ObsidianVault/20-记忆/共享/research/P+6件follow-up闭环-2026-08-12.md)_
+
+## Requirements change llm-router-phased. Update Purpose after archive.
 ## Requirements
 ### Requirement: CRUD 端点 (P0-2-rest-api 阶段交付)
 系统SHALL实现该能力. - `GET /admin/api/keys`：分页列表（query: page/per_page/provider）

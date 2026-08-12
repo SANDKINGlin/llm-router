@@ -1,7 +1,15 @@
 # P0-1-secretstore Specification
 
 ## Purpose
-TBD - created by archiving change llm-router-phased. Update Purpose after archive.
+SecretStore 抽象基类 (get/set/delete) + 认证鉴权系统. P0-1 阶段基础设施, R11+R15+R18+R29+R32 实装. spec 5 个 ADDED Requirements + Scenario 头 (8-11 R29 填).
+
+**R 链路映射**: R11 (R18 user_roles) + R15 + R18 + R29 archive + R32 rotate_key
+
+---
+
+_(TBD 段已被 8-12 P+ 闭环任务补全, 见 /home/lin/ObsidianVault/20-记忆/共享/research/P+6件follow-up闭环-2026-08-12.md)_
+
+## Requirements change llm-router-phased. Update Purpose after archive.
 ## Requirements
 ### Requirement: 核心接口 (P0-1-secretstore 阶段交付)
 系统SHALL实现该能力. SecretStore 抽象基类定义三个核心方法：

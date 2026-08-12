@@ -1,7 +1,15 @@
 # key-management Specification
 
 ## Purpose
-TBD - created by archiving change admin-webui-aaa-combo. Update Purpose after archive.
+API 密钥 CRUD (list/create/reveal/update/delete) + 过期检查 (R34 stub 改真查) + 旋转 (R32 cascade.breaker.rollback). 端到端 admin WebUI 跟 REST API.
+
+**R 链路映射**: R32 rotate_key + R34 key expiration
+
+---
+
+_(TBD 段已被 8-12 P+ 闭环任务补全, 见 /home/lin/ObsidianVault/20-记忆/共享/research/P+6件follow-up闭环-2026-08-12.md)_
+
+## Requirements change admin-webui-aaa-combo. Update Purpose after archive.
 ## Requirements
 ### Requirement: SecretStore抽象接口
 系统SHALL定义SecretStore抽象接口，支持多种后端存储实现。

@@ -1,7 +1,15 @@
 # admin-auth Specification
 
 ## Purpose
-TBD - created by archiving change admin-webui-aaa-combo. Update Purpose after archive.
+JWT 认证 + 角色鉴权 (admin WebUI + REST API 共享). admin/auth_enhanced.py + admin/auth.py 双实现, Token 24h 过期, is_active 软删除 (R18).
+
+**R 链路映射**: R18 user_roles.is_active + R30 trace endpoint 鉴权 + R34 密钥过期检查
+
+---
+
+_(TBD 段已被 8-12 P+ 闭环任务补全, 见 /home/lin/ObsidianVault/20-记忆/共享/research/P+6件follow-up闭环-2026-08-12.md)_
+
+## Requirements change admin-webui-aaa-combo. Update Purpose after archive.
 ## Requirements
 ### Requirement: localhost默认暴露策略
 系统从localhost访问Admin WebUI时SHALL允许匿名访问，无需认证。

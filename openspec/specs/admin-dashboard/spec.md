@@ -1,7 +1,15 @@
 # admin-dashboard Specification
 
 ## Purpose
-TBD - created by archiving change admin-webui-aaa-combo. Update Purpose after archive.
+admin WebUI 完整功能 (key 管理 + 监控 + 配置 + metrics charts). 12 spec 已 R7 8-05 标完 119 task, R26 observability 接入真数据, R28c R30 R34 治本.
+
+**R 链路映射**: R26 observability + R30 trace endpoint + R32 rotate_key + R34 key expiration
+
+---
+
+_(TBD 段已被 8-12 P+ 闭环任务补全, 见 /home/lin/ObsidianVault/20-记忆/共享/research/P+6件follow-up闭环-2026-08-12.md)_
+
+## Requirements change admin-webui-aaa-combo. Update Purpose after archive.
 ## Requirements
 ### Requirement: 熔断状态可视化
 系统SHALL提供熔断器状态实时查询接口和可视化展示。
