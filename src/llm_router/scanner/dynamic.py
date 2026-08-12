@@ -53,6 +53,24 @@ _DYNAMIC_QUOTA = 500000
 _DYNAMIC_COOLDOWN_S = 30
 _TIER_DEFAULT = "medium"
 
+# R37 治本: 按 source 调 quota, 跟 L153 _SOURCE_BASE_URL.get(model.source, "") 模式同款.
+# ScannerSource 仅 NVIDIA + OPENROUTER 2 成员 (snapshot.py:27-31), 真实查表.
+# NVIDIA NIM 免费档 ~5000/h, OpenRouter free 档 ~1000000 (差异大, 写死不合理).
+_DYNAMIC_QUOTA_BY_SOURCE: dict[ScannerSource, int] = {
+    ScannerSource.NVIDIA: 5000,
+    ScannerSource.OPENROUTER: 1000000,
+}
+_DYNAMIC_QUOTA_DEFAULT: int = _DYNAMIC_QUOTA  # fallback for future ScannerSource 成员
+
+
+def _get_quota_for_source(source: ScannerSource) -> int:
+    """R37 治本: 按 source 调 quota, 跟 _SOURCE_BASE_URL.get 同款查表模式.
+
+    Returns:
+        int: 该 source 的推荐 quota. 未知 source 走 _DYNAMIC_QUOTA_DEFAULT (跟 _DYNAMIC_QUOTA 一致, 500000).
+    """
+    return _DYNAMIC_QUOTA_BY_SOURCE.get(source, _DYNAMIC_QUOTA_DEFAULT)
+
 
 def _dynamic_name(model: DiscoveredModel) -> str:
     """动态条目稳定唯一 name = `dyn-{source}-{flat_id}`(同 build_dynamic_adapters,守一致)。
@@ -74,14 +92,14 @@ def dynamic_entry_to_provider_entry(model: DiscoveredModel) -> ProviderEntry:
       - name = `dyn-{source}-{flat_id}`(同 build_dynamic_adapters,守一致)
       - tier 从 model.tier 取(scanner.db 已贴标);None → 降级 medium
       - is_free=True / cost_multiplier=0.0(与静态免费 provider 同档竞争,守排序键字典序)
-      - quota=500000(默认,TODO 按 source 调)/ cooldown_s=30
+      - quota=500000(默认,R37 治本按 source 调: NVIDIA=5000, OPENROUTER=1000000)/ cooldown_s=30
       - 其余字段(base_url/api_key_env/model/entity)留空——动态 adapter 由 build_dynamic_adapters
         造,ProviderEntry 只供排序键 + TierMatcher,不参与 adapter 构造。
     """
     return ProviderEntry(
         name=_dynamic_name(model),
         tier=model.tier if model.tier is not None else _TIER_DEFAULT,
-        quota=_DYNAMIC_QUOTA,
+        quota=_get_quota_for_source(model.source),  # R37 治本: 按 source 查表, 替代 _DYNAMIC_QUOTA 写死
         cooldown_s=_DYNAMIC_COOLDOWN_S,
         is_free=True,
         cost_multiplier=0.0,

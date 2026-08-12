@@ -552,12 +552,16 @@ class TestOnTickComplete:
 
 class TestDynamicEntryToProviderEntry:
     def test_fields_correct_free_zero_cost(self):
-        """动态条目 is_free=True/cost_multiplier=0.0,与静态免费 provider 同档竞争。"""
+        """动态条目 is_free=True/cost_multiplier=0.0,与静态免费 provider 同档竞争。
+
+        R37 治本后 quota 按 source 调: NVIDIA=5000 (NIM 免费档 ~5000/h),
+        跟 _DYNAMIC_QUOTA 写死 500000 不一致. 跟 L153 _SOURCE_BASE_URL.get 同款查表模式.
+        """
         m = _nv("nvidia/llama-3.1-nemotron-70b-instruct", tier="strong")
         e = dynamic_entry_to_provider_entry(m)
         assert e.is_free is True
         assert e.cost_multiplier == 0.0
-        assert e.quota == 500000  # D1 默认(实现时按 source 调)
+        assert e.quota == 5000  # R37 治本: NVIDIA NIM 免费档 5000/h (按 source 调)
         assert e.cooldown_s == 30
         assert e.tier == "strong"
 
