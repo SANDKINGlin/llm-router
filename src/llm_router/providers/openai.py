@@ -28,7 +28,8 @@ class OpenAIProvider(Provider):
     Phase1:complete(prompt)->(text, model, usage);SDK 异常全归 ProviderError(HARD)。
     S2.4:提取 resp.usage → Usage(token_ledger 记账 + CostGate 超预算过滤)。部分 provider
     (如某些 OpenRouter 模型)不返 usage → Usage=None(Cascade 跳过记账,fail-open)。
-    TODO(S2.x):细分 RateLimit(立即可重试)/Transient(5xx·超时)/Permanent(不可恢复);流式。
+    S2.x:错误细分由 _provider_error() 处理 (RateLimit 429 retry_after / 其他 status_code);
+    complete_stream() 实现流式透传 (chat-stream-true-streaming)。
     """
 
     def __init__(

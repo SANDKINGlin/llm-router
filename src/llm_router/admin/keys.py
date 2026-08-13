@@ -6,24 +6,10 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
-from functools import wraps
 from fastapi import HTTPException, Request
 import sqlite3
 
 logger = logging.getLogger(__name__)
-
-
-def require_permission(permission: str):
-    """权限检查装饰器 - 验证用户是否有指定权限。"""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # TODO: 从JWT token中提取用户权限
-            # 当前简化版本：允许所有操作
-            # 等Section 4实施后需要验证真实权限
-            return await func(*args, **kwargs)
-        return wrapper
-    return decorator
 
 
 class KeyManager:

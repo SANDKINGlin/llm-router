@@ -18,7 +18,7 @@ from .auth import AuthMiddleware, generate_token, get_audit_logger, SecurityHead
 from .secrets import SecretStore, create_secret_store
 from ..config import policy
 from .providers import provider_manager, ProviderCreate, ProviderUpdate, ProviderResponse, ProviderListResponse
-from .keys import key_manager, require_permission
+from .keys import key_manager
 from .auth_enhanced import (
     enhanced_auth_manager,
     require_enhanced_permission,
