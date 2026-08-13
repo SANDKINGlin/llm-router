@@ -36,12 +36,24 @@ ARCHIVE_HINT = re.compile(r"(?:~/ObsidianVault/|ObsidianVault/)", re.IGNORECASE)
 
 
 def collect_changes(target: str | None) -> list[Path]:
-    """Collect change dirs under openspec/changes/."""
+    """Collect change dirs under openspec/changes/.
+
+    跳过 archive/ 目录 (它是历史归档容器, 不是 active change).
+    archive 内的子目录 (e.g. 2026-08-11-llm-router-phased) 各自带 proposal.md,
+    也不应该被当 active change 扫 (8-13 R44 CI fix, 跟 R29 archive 流程一致).
+    """
     if not OPENSPEC.exists():
         return []
     if target:
         return [OPENSPEC / target]
-    return sorted(p for p in OPENSPEC.iterdir() if p.is_dir())
+    changes = []
+    for p in sorted(OPENSPEC.iterdir()):
+        if not p.is_dir():
+            continue
+        if p.name == "archive":
+            continue  # 跳过 archive 目录 (历史归档容器)
+        changes.append(p)
+    return changes
 
 
 def check_change(change_dir: Path) -> tuple[str, list[str], list[str]]:
